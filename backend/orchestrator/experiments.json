@@ -1,0 +1,26 @@
+{
+    "dddf80e3-a262-4eed-a8e1-6422ce7a70c5": {
+        "type": "container_kill",
+        "target_container": "demo-mono",
+        "duration": 10,
+        "agent_id": "Agent-1",
+        "memory_mb": null,
+        "status": "completed",
+        "assigned_to": "Agent-1",
+        "result": {
+            "message": "Executed successfully"
+        }
+    },
+    "c5024d57-848d-412a-a325-27918c352ea4": {
+        "type": "container_kill",
+        "target_container": "demo-mono",
+        "duration": 30,
+        "agent_id": "215abcd",
+        "memory_mb": null,
+        "status": "completed",
+        "assigned_to": "215abcd",
+        "result": {
+            "message": "Executed successfully"
+        }
+    }
+}
