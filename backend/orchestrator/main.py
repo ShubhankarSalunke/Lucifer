@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from uuid import uuid4
 from storage import (
+    user_agent_mapping,
+    verify_token,
     register_agent,
     update_agent_last_seen,
     create_experiment,
@@ -20,8 +22,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-class AgentRegister(BaseModel):
+
+class UserAgentMapping(BaseModel):
+    user_id: str
     agent_id: str
+    # verification_token: str
+
+class AgentRegister(BaseModel):
+    verification_token: str
     host: str
 
 
@@ -38,12 +46,20 @@ class ExperimentResult(BaseModel):
     status: str
     result: dict | None = None
 
+@app.post("/create-agent")
+def create_agent(create_agent: UserAgentMapping):
+    verification_token = str(uuid4())
+    user_agent_mapping(create_agent.agent_id, create_agent.user_id, verification_token)
+    return {"message": "Agent registered", "agent_id": create_agent.agent_id, "verification_token": verification_token}
+
 
 @app.post("/register")
 def register(agent: AgentRegister):
-    register_agent(agent.agent_id, agent.host)
-    return {"message": "Agent registered"}
-
+    user_id, agent_id = verify_token(agent.verification_token)
+    if user_id == "Invalid verification token":
+        return {"message": "Invalid verification token"}
+    register_agent(agent_id, agent.host)
+    return {"message": "Agent registered", "agent_id": agent_id, "user_id": user_id}
 
 @app.get("/poll/{agent_id}")
 def poll(agent_id: str):

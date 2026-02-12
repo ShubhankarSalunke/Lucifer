@@ -4,11 +4,15 @@ import time
 import uuid
 import socket
 
-# CONTROL_PLANE = "http://localhost:8000"
-CONTROL_PLANE = "https://hk3l0rgbqd.execute-api.us-east-1.amazonaws.com"
+CONTROL_PLANE = "http://localhost:8000"
+# CONTROL_PLANE = "https://hk3l0rgbqd.execute-api.us-east-1.amazonaws.com"
 POLL_INTERVAL = 5
 
-AGENT_ID = input("Enter agent ID here : ")
+
+AGENT_ID = ""
+USER_ID = ""
+# AGENT_ID = input("Enter agent ID here : ")
+verification_token = input("Enter verification token here (displayed on agent registration): ")
 HOSTNAME = socket.gethostname()
 
 
@@ -37,13 +41,17 @@ def memory_stress(container, memory_mb, duration):
     ], check=False)
 
 def register():
-    requests.post(
+    resp = requests.post(
         f"{CONTROL_PLANE}/register",
         json={
-            "agent_id": AGENT_ID,
+            # "agent_id": AGENT_ID,
+            "verification_token": verification_token,
             "host": HOSTNAME
         }
     )
+
+    data = resp.json()
+    return data["agent_id"], data["user_id"]
 
 def execute_experiment(exp):
     exp_id = exp["experiment_id"]
@@ -80,9 +88,10 @@ def execute_experiment(exp):
             }
         )
 
-def poll_loop():
+def poll_loop(AGENT_ID):
     while True:
         try:
+            print("Polling Orchestrator for Experiments...")
             resp = requests.get(
                 f"{CONTROL_PLANE}/poll/{AGENT_ID}"
             )
@@ -99,6 +108,7 @@ def poll_loop():
 
 
 if __name__ == "__main__":
-    print("Starting agent:", AGENT_ID)
-    register()
-    poll_loop()
+    # print("Starting agent:", AGENT_ID)
+    AGENT_ID, USER_ID = register()
+    print(f"Agent {AGENT_ID} registered and verified with the orchestrator")
+    poll_loop(AGENT_ID)

@@ -2,11 +2,13 @@ import json
 import threading
 from pathlib import Path
 from datetime import datetime
+import hashlib
 
 lock = threading.Lock()
 
 AGENTS_FILE = Path("agents.json")
 EXPERIMENTS_FILE = Path("experiments.json")
+USER_AGENT_MAPPING_FILE = Path("user_agent_mapping.json")
 
 for file in [AGENTS_FILE, EXPERIMENTS_FILE]:
     if not file.exists():
@@ -21,6 +23,21 @@ def read_json(file_path):
 def write_json(file_path, data):
     with lock:
         file_path.write_text(json.dumps(data, indent=4))
+
+def user_agent_mapping(agent_id, user_id, verification_token):
+    user_agent_mapping = read_json(USER_AGENT_MAPPING_FILE)
+    user_agent_mapping[user_id] = {
+        "agent_id": agent_id,
+        "verification_token": hashlib.sha256(verification_token.encode()).hexdigest()
+    }
+    write_json(USER_AGENT_MAPPING_FILE, user_agent_mapping)
+
+def verify_token(verification_token):
+    user_agent_mapping = read_json(USER_AGENT_MAPPING_FILE)
+    for user in user_agent_mapping.keys():
+        if user_agent_mapping[user]["verification_token"] == hashlib.sha256(verification_token.encode()).hexdigest():
+            return user, user_agent_mapping[user]["agent_id"]
+    return "Invalid verification token", "Invalid verification token"
 
 
 def register_agent(agent_id, host):

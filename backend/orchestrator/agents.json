@@ -1,10 +1,6 @@
 {
-    "Agent-1": {
+    "Agent1": {
         "host": "LAPTOP-2DG2FIVR",
-        "last_seen": "2026-02-11T12:56:33.773700"
-    },
-    "215abcd": {
-        "host": "LAPTOP-2DG2FIVR",
-        "last_seen": "2026-02-11T16:34:33.577412"
+        "last_seen": "2026-02-12T15:00:19.805869"
     }
 }
