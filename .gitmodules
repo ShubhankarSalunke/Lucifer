@@ -1,3 +1,6 @@
 [submodule "security-audit"]
 	path = security-audit
 	url = https://github.com/adigajjar/security-audit.git
+[submodule "chaos-engineering"]
+	path = chaos-engineering
+	url = https://github.com/ShubhankarSalunke/chaos-engineering.git
