@@ -4,8 +4,10 @@ import time
 import uuid
 import socket
 
-CONTROL_PLANE = "http://localhost:8000"
-# CONTROL_PLANE = "https://hk3l0rgbqd.execute-api.us-east-1.amazonaws.com"
+
+#docker run --name demo-mono -d -p 8000:80 nginx
+# CONTROL_PLANE = "http://localhost:8000"
+CONTROL_PLANE = "https://yoi0pc6611.execute-api.us-east-1.amazonaws.com"
 POLL_INTERVAL = 5
 
 
