@@ -9,7 +9,7 @@ git pull origin main
 echo "Syncing and updating submodules..."
 git submodule update --init --recursive
 
-# 3. (Optional) Pull the latest changes within each submodule
+# 3. Pull the latest changes within each submodule
 # By default, submodules point to a specific commit. 
 # Run this if you want the submodules to track the latest remote branch:
 git submodule update --remote --merge
