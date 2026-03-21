@@ -12,6 +12,6 @@ git submodule update --init --recursive
 # 3. (Optional) Pull the latest changes within each submodule
 # By default, submodules point to a specific commit. 
 # Run this if you want the submodules to track the latest remote branch:
-# git submodule update --remote --merge
+git submodule update --remote --merge
 
 echo "Done! Your environment is synchronized."
