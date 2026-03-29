@@ -12,8 +12,12 @@ type Config struct {
 }
 
 func getConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err == nil {
+		return filepath.Join(home, ".chaos", "config.json")
+	}
 	curr, _ := os.Getwd()
-	return filepath.Join(curr, "lucifer", "config.json")
+	return filepath.Join(curr, ".chaos", "config.json")
 }
 
 func LoadConfig() Config {
@@ -47,12 +51,20 @@ func SaveConfig(cfg Config) error {
 }
 
 func GetServerURL() string {
-	var cfg Config
+	cfg := LoadConfig()
+	if cfg.ServerURL != "" {
+		return cfg.ServerURL
+	}
 	cfg.ServerURL = "http://localhost:8000"
 	// cfg.ServerURL = "https://aws_gateway_link"
 	return cfg.ServerURL
 }
 
 func GetToken() string {
-	return os.Getenv("CHAOS_TOKEN")
+	envToken := os.Getenv("CHAOS_TOKEN")
+	if envToken != "" {
+		return envToken
+	}
+	cfg := LoadConfig()
+	return cfg.Token
 }

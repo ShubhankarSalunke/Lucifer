@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"strings"
 
 	"lucifer-cli/config"
 
@@ -15,7 +18,19 @@ var signupCmd = &cobra.Command{
 	Short: "Create a new user and store API token",
 	Run: func(cmd *cobra.Command, args []string) {
 
-		resp, err := doRequest("POST", config.GetServerURL()+"/create-user", nil)
+		fmt.Print("Enter User ID (Email): ")
+		reader := bufio.NewReader(os.Stdin)
+		userID, _ := reader.ReadString('\n')
+		userID = strings.TrimSpace(userID)
+
+		payload := map[string]string{}
+		if userID != "" {
+			payload["user_id"] = userID
+		}
+		
+		bodyBytes, _ := json.Marshal(payload)
+
+		resp, err := doRequest("POST", config.GetServerURL()+"/create-user", bodyBytes)
 		if err != nil {
 			fmt.Println("Request failed:", err)
 			return
