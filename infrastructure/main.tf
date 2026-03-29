@@ -30,7 +30,7 @@ resource "aws_security_group" "my_sg" {
         from_port = 22
         to_port = 22
         protocol = "tcp"
-        cidr_blocks = ["152.58.16.23/32"]
+        cidr_blocks = ["0.0.0.0/0"]
     }
 
     egress {
@@ -91,13 +91,13 @@ resource "aws_instance" "agent" {
 }
 
 
-resource "aws_apigatewayv2_api" "api" {
-  name          = "ec2-http-api"
-  protocol_type = "HTTP"
-}
+# resource "aws_apigatewayv2_api" "api" {
+#   name          = "ec2-http-api"
+#   protocol_type = "HTTP"
+# }
 
 resource "aws_apigatewayv2_integration" "integration" {
-  api_id                 = aws_apigatewayv2_api.api.id
+  api_id                 = "kzvijk5asj"
   integration_type       = "HTTP_PROXY"
   integration_method     = "ANY"
   integration_uri        = "http://${aws_instance.my_server.public_ip}:8000"
@@ -106,14 +106,14 @@ resource "aws_apigatewayv2_integration" "integration" {
 
 # Catch-all route
 resource "aws_apigatewayv2_route" "route" {
-  api_id    = aws_apigatewayv2_api.api.id
+  api_id    = "kzvijk5asj"
   route_key = "$default"
   target    = "integrations/${aws_apigatewayv2_integration.integration.id}"
 }
 
 # Default stage (auto deploy enabled)
 resource "aws_apigatewayv2_stage" "stage" {
-  api_id      = aws_apigatewayv2_api.api.id
+  api_id      = "kzvijk5asj"
   name        = "$default"
   auto_deploy = true
 }
@@ -121,7 +121,4 @@ resource "aws_apigatewayv2_stage" "stage" {
 
 output "ec2_public_ip" {
   value = aws_instance.my_server.public_ip
-}
-output "api_gateway_url" {
-  value = aws_apigatewayv2_api.api.api_endpoint
 }
