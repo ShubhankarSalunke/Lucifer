@@ -18,6 +18,12 @@ var (
 	memory     int
 	latency    int
 	target     string
+	bucket     string
+	roleArn    string
+	kmsKey     string
+	prefix     string
+	percent    int
+	externalID string
 )
 
 var createExperimentCmd = &cobra.Command{
@@ -66,6 +72,45 @@ var createExperimentCmd = &cobra.Command{
 				return
 			}
 
+		case "s3_access_deny":
+			if bucket == "" {
+				fmt.Println("bucket name required")
+				return
+			}
+			payload["bucket_name"] = bucket
+			payload["role_arn"] = roleArn
+			payload["external_id"] = externalID
+
+		case "s3_kms_disable":
+			if kmsKey == "" {
+				fmt.Println("kms-key required")
+				return
+			}
+			payload["kms_key_id"] = kmsKey
+			payload["role_arn"] = roleArn
+			payload["external_id"] = externalID
+
+		case "s3_object_delete":
+			if bucket == "" {
+				fmt.Println("bucket name required")
+				return
+			}
+			payload["bucket_name"] = bucket
+			payload["prefix"] = prefix
+			payload["delete_percent"] = percent
+			payload["role_arn"] = roleArn
+			payload["external_id"] = externalID
+
+		case "s3_metadata_corrupt":
+			if bucket == "" {
+				fmt.Println("bucket name required")
+				return
+			}
+			payload["bucket_name"] = bucket
+			payload["prefix"] = prefix
+			payload["role_arn"] = roleArn
+			payload["external_id"] = externalID
+
 		default:
 			fmt.Println("invalid experiment type")
 			return
@@ -107,6 +152,12 @@ func init() {
 	createExperimentCmd.Flags().IntVar(&memory, "memory", 0, "Memory MB")
 	createExperimentCmd.Flags().IntVar(&latency, "latency", 0, "Latency ms")
 	createExperimentCmd.Flags().StringVar(&target, "target", "", "Target container")
+	createExperimentCmd.Flags().StringVar(&bucket, "bucket", "", "Target S3 bucket")
+	createExperimentCmd.Flags().StringVar(&roleArn, "role-arn", "", "IAM Role ARN to assume")
+	createExperimentCmd.Flags().StringVar(&kmsKey, "kms-key", "", "KMS Key ID/ARN")
+	createExperimentCmd.Flags().StringVar(&prefix, "prefix", "", "Object prefix")
+	createExperimentCmd.Flags().IntVar(&percent, "percent", 10, "Percentage of objects to affect")
+	createExperimentCmd.Flags().StringVar(&externalID, "external-id", "", "External ID for role assumption")
 
 	createExperimentCmd.MarkFlagRequired("type")
 	createExperimentCmd.MarkFlagRequired("agent")
