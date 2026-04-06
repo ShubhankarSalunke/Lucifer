@@ -1,14 +1,12 @@
-# Instructions for the submodule initialization part:
+# LUCIFER
 
-## 1. If you are cloning this repo for the first time,
-Execute : 
-```git clone --recursive https://github.com/ShubhankarSalunke/Lucifer.git```
-
-## 2. If you have already cloned this repo:
-Execute :
-```git pull```
-Then:
-```./commands.sh```
+## Lucifer is a DevSecOps Tool focused on Chaos Engineering and VAPT.
 
 
+## High Level Design:
+<img width="1155" height="610" alt="System_architecture (HLD) drawio" src="https://github.com/user-attachments/assets/62dbb7d2-9566-4b58-b6a7-d5643bbc1fd4" />
+
+
+## Low level Design:
+<img width="2330" height="650" alt="System Architecture (LLD) drawio" src="https://github.com/user-attachments/assets/88f0642e-26b4-4978-a3b9-23ef1c093447" />
 
