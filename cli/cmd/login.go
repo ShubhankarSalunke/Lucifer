@@ -61,7 +61,7 @@ var loginCmd = &cobra.Command{
 			return
 		}
 		fmt.Println("✅ Login successful")
-		fmt.Println("Token saved to ~/.chaos/config.json")
+		fmt.Println("Token saved to ~/.lucifer/config.json")
 	},
 }
 

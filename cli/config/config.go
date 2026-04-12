@@ -9,15 +9,22 @@ import (
 type Config struct {
 	Token     string `json:"token"`
 	ServerURL string `json:"base_url"`
+	AWS       struct {
+		AccessKey  string `json:"access_key"`
+		SecretKey  string `json:"secret_key"`
+		Region     string `json:"region"`
+		RoleArn    string `json:"role_arn"`
+		ExternalId string `json:"external_id"`
+	} `json:"aws_config"`
 }
 
 func getConfigPath() string {
 	home, err := os.UserHomeDir()
 	if err == nil {
-		return filepath.Join(home, ".chaos", "config.json")
+		return filepath.Join(home, ".lucifer", "config.json")
 	}
 	curr, _ := os.Getwd()
-	return filepath.Join(curr, ".chaos", "config.json")
+	return filepath.Join(curr, ".lucifer", "config.json")
 }
 
 func LoadConfig() Config {

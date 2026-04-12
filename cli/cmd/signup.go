@@ -27,7 +27,7 @@ var signupCmd = &cobra.Command{
 		if userID != "" {
 			payload["user_id"] = userID
 		}
-		
+
 		bodyBytes, _ := json.Marshal(payload)
 
 		resp, err := doRequest("POST", config.GetServerURL()+"/create-user", bodyBytes)
@@ -61,7 +61,7 @@ var signupCmd = &cobra.Command{
 		}
 		fmt.Println("Token:", token)
 		fmt.Println("✅ Signup successful")
-		fmt.Println("Token saved to ~/.chaos/config.json")
+		fmt.Println("Token saved to ~/.lucifer/config.json")
 	},
 }
 

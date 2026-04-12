@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"lucifer-cli/config"
 
@@ -31,16 +32,33 @@ var createExperimentCmd = &cobra.Command{
 	Short: "Create experiment",
 	Run: func(cmd *cobra.Command, args []string) {
 
-		if expType == "" || agentIDExp == "" || duration <= 0 {
-			fmt.Println("type, agent and duration are required")
+		if expType == "" || duration <= 0 {
+			fmt.Println("type and duration are required")
 			return
 		}
+		
+		if !strings.HasPrefix(expType, "s3_") && agentIDExp == "" {
+			fmt.Println("agent is required for host-level chaos experiments")
+			return
+		}
+
+		cfg := config.LoadConfig()
 
 		payload := map[string]interface{}{
 			"type":             expType,
 			"agent_id":         agentIDExp,
 			"duration":         duration,
 			"target_container": target,
+			"access_key":       cfg.AWS.AccessKey,
+			"secret_key":       cfg.AWS.SecretKey,
+			"region":           cfg.AWS.Region,
+		}
+
+		if roleArn == "" && cfg.AWS.RoleArn != "" {
+			roleArn = cfg.AWS.RoleArn
+		}
+		if externalID == "" && cfg.AWS.ExternalId != "" {
+			externalID = cfg.AWS.ExternalId
 		}
 
 		switch expType {
@@ -160,7 +178,6 @@ func init() {
 	createExperimentCmd.Flags().StringVar(&externalID, "external-id", "", "External ID for role assumption")
 
 	createExperimentCmd.MarkFlagRequired("type")
-	createExperimentCmd.MarkFlagRequired("agent")
 
 	rootCmd.AddCommand(createExperimentCmd)
 }
