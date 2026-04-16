@@ -62,8 +62,8 @@ func GetServerURL() string {
 	if cfg.ServerURL != "" {
 		return cfg.ServerURL
 	}
-	cfg.ServerURL = "http://localhost:8000"
-	// cfg.ServerURL = "https://aws_gateway_link"
+	// cfg.ServerURL = "http://localhost:8000"
+	cfg.ServerURL = "https://kzvijk5asj.execute-api.us-east-1.amazonaws.com/"
 	return cfg.ServerURL
 }
 

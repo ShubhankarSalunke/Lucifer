@@ -4,7 +4,8 @@
 
 
 ## High Level Design:
-<img width="1155" height="610" alt="System_architecture (HLD) drawio" src="https://github.com/user-attachments/assets/62dbb7d2-9566-4b58-b6a7-d5643bbc1fd4" />
+<img width="11009" height="5435" alt="System_architecture (HLD) (1)" src="https://github.com/user-attachments/assets/215137f7-66e2-4eb1-a9a8-db175f3ba2a8" />
+
 
 
 ## Low level Design:
