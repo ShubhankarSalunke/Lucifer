@@ -1,0 +1,106 @@
+Fields: Comprised of fieldKeys and fieldValues. Fields are required and are not indexed. This means that Queries using Fields to filter data are relatively slow.
+
+Tags: Comprised of tagKeys and tagValues. Tags are optional and can be indexed. This means that Queries using Tags are much faster than their Fields counterpart.
+
+go-chi chi router: This is a lightweight, idiomatic and composable router for building Go HTTP services.
+
+
+TSM (Time-Structured Merge Tree): This is a storage engine used by InfluxDB to store and query time-series data.
+it's designed around LSM (Log-Structured Merge-Tree) architecture, which is optimized for write-heavy workloads like time-series data. Has good read and write characteristics. 
+ 
+TSM series is a single value varying over time. It stores them on disk in columnar format. 
+[measurent,  tags, field]
+
+time-stamp data storage and compression, data lifecycle management, data summarization, ability to handle large time series dependent scans of many records, and time series aware queries.
+
+maybe we could try TICK model for our system too, collect-store-visualize-process/alert. 
+
+FLUX-language is a functional data-scripting language for processing and analyzing time-series data. 
+
+
+Another life-saver for us was the into clause feature. You can run a query and write the results directly back into the database without round-tripping to the application client.
+
+
+
+the default is that a new shard is created each week, and data are kept forever (infinite retention). Depending on your ingest load, the write times will eventually suffer with such a configuration, but being too aggressive in splitting the data in shards, which is done through time durations, could render queries astonishingly slow.
+
+introduce Nagling between our application and InfluxDB. Buffering measurement points on a per-sensor-stream basis, and then writing them in a single batch when the buffer fills up, allowed us to improve write throughput by up to 10x.
+
+for this buffer we can use smth lightweight like redis ...but the ip changes constantly. 
+
+
+InfluxDB → compute result (generic queries and summaries)→ store in cache
+UI → reads from cache (not InfluxDB)
+
+
+A bucket is named location with retention policy where time-series data is stored.
+A series is a logical grouping of data defined by shared measurement, tag and field.
+A measurement is similar to an SQL database table.
+A tag is similar to indexed columns in an SQL database.
+A field is similar to unindexed columns in an SQL database.
+A point is similar to SQL row.
+
+
+
+we can chaos experiment on this too!
+In a standard EC2 instance, you are sharing a physical CPU die with other strangers (tenants).If your app is lagging for "no reason," you might need Dedicated Hosts or Bare Metal instances where you own the entire die and don't share the "kitchen" with anyone else.If a "neighbor" on the same die starts a massive data crunch, they can hog the shared L3 Cache (the memory sitting right on the die).
+
+
+
+
+smth to remember for myself as well. 
+If you don't understand your die layout, you might accidentally trigger a license for 16 cores when you're only using 8, potentially costing you thousands of dollars in "accidental" fees.On the flip side, running simple background scripts on expensive P-cores (performance) is like hiring a world-class chef to toast bread. You're wasting money
+
+
+so in caching if cache miss, we allow for a locking for one server and recompute the process and then update cache. we can try back-off retry but it needs sweetspot for compute and network latency.
+probablistic experiration of key. 
+for non exisitne tdata req, we put null after first request and other subsequent requests see NULL.
+Bloom filter - to check if record exists 
+
+
+
+
+Lifecycle policies can be configured under the properties tab of an S3 bucket in the S3 console. can we check this for chaos? S3 released the Intelligent Tiering storage class a few years back to handle this scenario. Intelligent Tiering will analyze the access patterns of your data to figure out which storage class each file should belong to. This service costs a little extra on top of the storage costs you’d be paying normally, but it is a great solution for those who want to have that analysis work automated.
+
+
+Object Lock retention operation to apply retention dates for your objects by using either governance mode or compliance mode. 
+ Batch Operations needs the s3:GetBucketObjectLockConfiguration and s3:PutObjectRetention permissions in an AWS Identity and Access Management (IAM) role to allow Batch Operations to call Object Lock on your behalf.
+
+If you upload periodic logs to a bucket, your application might need them for a week or a month. After that, you might want to delete them.
+Some documents are frequently accessed for a limited period of time. After that, they are infrequently accessed.
+You might upload some types of data to Amazon S3 primarily for archival purposes.
+
+
+A 1m window has faster MTTD but high false-positive risk (transient jitter in distributed systems). A 5m window is the sweet spot between noise suppression and detection speed for sustained anomalies.
+
+
+
+Critical trap — A 90-second CPU spike injected during a chaos experiment is completely invisible at 5m with mean. If you need to observe short-lived faults, you must use 1m + enable Detailed Monitoring on EC2.
+
+
+
+
+vapt_report.pdf (on disk)
+    │  human/automation reads findings
+    ▼
+lucifer create-experiment --type cpu_stress --agent <id>   ← CLI call
+    │  POSTs to gateway with report_id attached
+    ▼
+InfluxDB: PushExperimentResult(..., reportID: "vapt_2026_04_05.pdf", ...)
+    │  stored with rule_id + report_id
+    ▼
+query: "which rules from this report have no confirmed experiment yet?"
+    │  drives the NEXT experiment
+    ▼
+repeat
+
+
+
+orchestrator.go. It sets up HTTP ingest routes (/metrics/compute and /metrics/storage). The RunMetricPusher() safely runs in the background using a time.Ticker every 60 seconds to flush the buffer.
+utilized a Go Channel (expStatusChan) and the /experiment/status endpoint to securely toggle whether metrics should be ingested or dropped entirely. 
+
+datamodel.NewDataModel() correctly initializes your QueryCache internally. It utilizes the highly efficient algorithm we worked on over in cache.go (singleflight protection + Bloom Filters). When a request hits your api/metrics/compute/{instanceID} HTTP handler, it uses this cache to serve the API. 
+
+It costs roughly $0.01 per 1,000 metrics requested.
+
+
