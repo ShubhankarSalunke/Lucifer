@@ -22,17 +22,10 @@ func main() {
 		url = "http://localhost:8086"
 	}
 	token := os.Getenv("INFLUX_TOKEN")
-	if token == "" {
-		token = "my-super-secret-auth-token"
-	}
+
 	org := os.Getenv("INFLUX_ORG")
-	if org == "" {
-		org = "chaos-engineering"
-	}
+
 	bucket := os.Getenv("INFLUX_BUCKET")
-	if bucket == "" {
-		bucket = "chaos-engineering"
-	}
 
 	dm, err := datamodel.NewDataModel(url, token, org, bucket)
 	if err != nil {

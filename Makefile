@@ -2,7 +2,7 @@
 
 gateway:
 	@echo "Starting API Gateway (Port 8000)..."
-	@cd backend-go/orchestrator && PORT=8000 go run .
+	@cd chaos-engineering/orchestrator && PORT=8000 go run .
 
 datamodel:
 	@echo "Starting Datamodel Server (Port 8001)..."
@@ -14,7 +14,7 @@ metrics:
 
 agent:
 	@echo "Starting Chaos Agent..."
-	@cd backend-go/agent && go run agent.go
+	@cd chaos-engineering/agent && go run agent.go
 
 ui:
 	@echo "Starting CLI UI..."
