@@ -1,0 +1,61 @@
+{
+  "document": {
+    "margin": 1
+  },
+  "block_quote": {
+    "style": "fg=245"
+  },
+  "heading": {
+    "levels": [
+      {
+        "style": "bold fg=39",
+        "prefix": " "
+      },
+      {
+        "style": "bold fg=81"
+      },
+      {
+        "style": "bold fg=75"
+      }
+    ]
+  },
+  "h1": {
+    "style": "bold fg=51 underline"
+  },
+  "h2": {
+    "style": "bold fg=45"
+  },
+  "h3": {
+    "style": "bold fg=39"
+  },
+  "text": {
+    "style": "fg=252"
+  },
+  "emph": {
+    "style": "italic fg=220"
+  },
+  "strong": {
+    "style": "bold fg=15"
+  },
+  "code": {
+    "style": "bg=235 fg=214"
+  },
+  "code_block": {
+    "style": "bg=233 fg=252"
+  },
+  "list": {
+    "style": "fg=252"
+  },
+  "item": {
+    "style": "fg=252"
+  },
+  "link": {
+    "style": "underline fg=39"
+  },
+  "hr": {
+    "style": "fg=240"
+  },
+  "table": {
+    "style": "fg=252"
+  }
+}

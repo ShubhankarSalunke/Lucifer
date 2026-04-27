@@ -1,0 +1,32 @@
+--help  
+    Adding a --help command to your CLI provides users with an essential piece of documentation.
+    You should also make sure that your users can run the --help flag after any specific command to quickly see the full syntax 
+
+Use progress bars
+    show what’s happening by using progress bars, spinners, and other visual devices.
+
+Use colors or symbols 
+    CLI should provide an equal and appropriate reaction, clearly highlighting the current system status.
+
+Craft human-readable error messages
+    error messages that come directly from the back-end system that created it, and provide little value to the user who’s trying to figure out what’s gone wrong, and how they can quickly recover from it. 
+
+Suggest the next best step, users might need a bit of prompting.
+
+
+observed that many developers often skim-read the text, only looking for information that appears relevant to their immediate needs.
+
+
+
+In Go, embed.FS is a very specific tool used to burn files directly into your compiled .exe or binary at compile-time. 
+security audit tool to also dump a findings.json right next to the markdown, which is mathematically much safer to filter/Search than parsing the .md blocks with regex. 
+
+
+
+Top Bar: A live layout featuring a Search Input, a Status Dropdown (PASS/FAIL/ALL), and a Severity Filter Dropdown.
+Left Panel (The Cards): I mapped your findings list into a tview.List component, which functions essentially as interactive "cards". Each finding is color-coded automatically:
+CRITICAL -> Red
+HIGH -> Orange
+MEDIUM -> Yellow
+LOW -> Green
+Right Panel (The Viewer): Whenever you navigate up or down the card list, this panel instantly re-runs the specific parsed chunk of Markdown through glamour and renders it luxuriously inside the CLI.
