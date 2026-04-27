@@ -119,6 +119,14 @@ resource "aws_apigatewayv2_stage" "stage" {
 }
 
 
-output "ec2_public_ip" {
+output "orchestrator_public_ip" {
   value = aws_instance.my_server.public_ip
+}
+
+output "agent_public_ip" {
+  value = aws_instance.agent.public_ip
+}
+
+output "aws_gateway_url" {
+  value = "https://kzvijk5asj.execute-api.us-east-1.amazonaws.com/"
 }
