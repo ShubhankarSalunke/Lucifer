@@ -38,7 +38,7 @@ func resolvePath(path string) string {
 	if _, err := os.Stat("../../../" + path); err == nil {
 		return "../../../" + path
 	}
-	return path 
+	return path
 }
 
 func getCache() *QueryCache {
@@ -49,12 +49,12 @@ func getCache() *QueryCache {
 }
 
 type VAPTResult struct {
-	RuleID      string   `json:"rule_id"`
-	RuleName    string   `json:"rule_name"`
-	Severity    string   `json:"severity"`
-	Status      string   `json:"status"`
-	Message     string   `json:"message"`
-	Remediation string   `json:"remediation"`
+	RuleID      string             `json:"rule_id"`
+	RuleName    string             `json:"rule_name"`
+	Severity    string             `json:"severity"`
+	Status      string             `json:"status"`
+	Message     string             `json:"message"`
+	Remediation string             `json:"remediation"`
 	Experiments []ExperimentResult `json:"experiments"`
 }
 
@@ -77,7 +77,6 @@ type FleetStats struct {
 	VaptScore      float64 `json:"vapt_score"`
 }
 
-
 func GetFleetStats() (*FleetStats, error) {
 	val, err := getCache().Fetch("fleet_stats", 2*time.Second, func() (interface{}, error) {
 		agentsData, _ := readJSON(AgentsFile)
@@ -94,33 +93,50 @@ func GetFleetStats() (*FleetStats, error) {
 
 		for _, v := range experiments {
 			exp, ok := v.(map[string]interface{})
-			if !ok { continue }
-			
+			if !ok {
+				continue
+			}
+
 			// Extract from top level (where local agent results are mapped)
-			if cpu, ok := exp["cpu_percent"].(float64); ok && cpu > 0 { 
+			if cpu, ok := exp["cpu_percent"].(float64); ok && cpu > 0 {
 				totalCPU += cpu
 				cpuCount++
 			}
-			if mem, ok := exp["memory_mb"].(float64); ok && mem > 0 { 
+			if mem, ok := exp["memory_mb"].(float64); ok && mem > 0 {
 				totalMem += mem
 				memCount++
 			}
 
-			if lat, ok := exp["latency_ms"].(float64); ok && lat > 0 { 
+			if lat, ok := exp["latency_ms"].(float64); ok && lat > 0 {
 				totalLat += lat
 				latCount++
 			}
 
 			if res, ok := exp["result"].(map[string]interface{}); ok {
-				if cpu, ok := res["cpu_spike"].(float64); ok && cpu > 0 { totalCPU += cpu; cpuCount++ }
-				if lat, ok := res["latency_spike"].(float64); ok && lat > 0 { totalLat += lat; latCount++ }
-				if mem, ok := res["memory_spike"].(float64); ok && mem > 0 { totalMem += mem; memCount++ }
+				if cpu, ok := res["cpu_spike"].(float64); ok && cpu > 0 {
+					totalCPU += cpu
+					cpuCount++
+				}
+				if lat, ok := res["latency_spike"].(float64); ok && lat > 0 {
+					totalLat += lat
+					latCount++
+				}
+				if mem, ok := res["memory_spike"].(float64); ok && mem > 0 {
+					totalMem += mem
+					memCount++
+				}
 			}
 		}
 
-		if cpuCount > 0 { stats.AverageCPU = totalCPU / float64(cpuCount) }
-		if latCount > 0 { stats.AverageLatency = totalLat / float64(latCount) }
-		if memCount > 0 { stats.AverageMemory = totalMem / float64(memCount) }
+		if cpuCount > 0 {
+			stats.AverageCPU = totalCPU / float64(cpuCount)
+		}
+		if latCount > 0 {
+			stats.AverageLatency = totalLat / float64(latCount)
+		}
+		if memCount > 0 {
+			stats.AverageMemory = totalMem / float64(memCount)
+		}
 
 		return stats, nil
 	})
@@ -131,9 +147,53 @@ func GetFleetStats() (*FleetStats, error) {
 	return val.(*FleetStats), nil
 }
 
-
 func DiscoverAgents(ctx context.Context, awsCfg connectors.AWSConfig) ([]Agent, error) {
 	return GetAgents(ctx, awsCfg)
+}
+
+func GetComputeMetrics(instanceID string) (*ComputeSummary, error) {
+	experiments, _ := readJSON(ExperimentsFile)
+
+	summary := &ComputeSummary{
+		InstanceID: instanceID,
+		Timestamp:  time.Now().Format(time.RFC3339),
+	}
+
+	cleanID := strings.Trim(instanceID, "\"")
+
+	for _, v := range experiments {
+		exp, ok := v.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		expAgentID, _ := exp["agent_id"].(string)
+		if strings.Trim(expAgentID, "\"") == cleanID {
+			if res, ok := exp["result"].(map[string]interface{}); ok {
+				if cpu, ok := res["cpu_spike"].(float64); ok {
+					summary.ComputeMetric.CPUUtilization = cpu
+				}
+				if net, ok := res["net_spike"].(float64); ok {
+					summary.ComputeMetric.NetworkInBytes = net
+				}
+				if disk, ok := res["disk_spike"].(float64); ok {
+					summary.ComputeMetric.DiskReadBytes = disk
+				}
+			} else {
+				if cpu, ok := exp["cpu_percent"].(float64); ok {
+					summary.ComputeMetric.CPUUtilization = cpu
+				}
+				if net, ok := exp["net_kbps"].(float64); ok {
+					summary.ComputeMetric.NetworkInBytes = net
+				}
+				if disk, ok := exp["disk_mbps"].(float64); ok {
+					summary.ComputeMetric.DiskReadBytes = disk
+				}
+			}
+		}
+	}
+
+	return summary, nil
 }
 
 func GetAgents(ctx context.Context, awsCfg connectors.AWSConfig) ([]Agent, error) {
@@ -146,7 +206,9 @@ func GetAgents(ctx context.Context, awsCfg connectors.AWSConfig) ([]Agent, error
 		//Add agents from live heartbeats
 		for id, v := range agents {
 			agentData, ok := v.(map[string]interface{})
-			if !ok { continue }
+			if !ok {
+				continue
+			}
 			host, _ := agentData["host"].(string)
 			lastSeen := "Unknown"
 			if ls, ok := agentData["last_seen"].(string); ok {
@@ -172,7 +234,7 @@ func GetAgents(ctx context.Context, awsCfg connectors.AWSConfig) ([]Agent, error
 				awsCfg.Region = "us-east-1"
 			}
 		}
-		
+
 		cfg, err := connectors.ConnectAws(ctx, awsCfg)
 		if err == nil {
 			client := ec2.NewFromConfig(cfg)
@@ -214,8 +276,10 @@ func GetAgents(ctx context.Context, awsCfg connectors.AWSConfig) ([]Agent, error
 
 		for _, v := range experiments {
 			exp, ok := v.(map[string]interface{})
-			if !ok { continue }
-			
+			if !ok {
+				continue
+			}
+
 			agentID, _ := exp["agent_id"].(string)
 			if agentID != "" {
 				if _, exists := allAgents[agentID]; !exists {
@@ -242,12 +306,6 @@ func GetAgents(ctx context.Context, awsCfg connectors.AWSConfig) ([]Agent, error
 	return val.([]Agent), nil
 }
 
-
-
-
-
-
-
 func readJSON(file string) (map[string]interface{}, error) {
 	cacheKey := "json_" + file
 	if val, found := getCache().Get(cacheKey); found {
@@ -264,7 +322,6 @@ func readJSON(file string) (map[string]interface{}, error) {
 	getCache().Set(cacheKey, data, 10*time.Second)
 	return data, nil
 }
-
 
 func GetMappedDescription(idOrType string) string {
 	mapping, _ := readJSON(MappingFile)
@@ -311,7 +368,7 @@ func GetResults() (map[string]ExperimentResult, error) {
 		if expMap, ok := val.(map[string]interface{}); ok {
 			var res ExperimentResult
 			res.ExperimentID = id
-			
+
 			if status, ok := expMap["status"].(string); ok {
 				res.Status = status
 			}
@@ -328,21 +385,29 @@ func GetResults() (map[string]ExperimentResult, error) {
 				res.ExperimentType = etype
 			}
 
-
 			if resultData, ok := expMap["result"].(map[string]interface{}); ok {
 				mapToStruct(resultData, &res)
-				
-				if cpu, ok := resultData["cpu_spike"].(float64); ok { res.CPUPercent = int(cpu) }
-				if lat, ok := resultData["latency_spike"].(float64); ok { res.LatencyMS = int(lat) }
-				if mem, ok := expMap["memory_mb"].(float64); ok { res.MemoryMB = int(mem) }
-				if l, ok := expMap["latency_ms"].(float64); ok { res.LatencyMS = int(l) }
-				if c, ok := expMap["cpu_percent"].(float64); ok { res.CPUPercent = int(c) }
-				if restored, ok := resultData["restored"].(bool); ok { res.Restored = restored }
+
+				if cpu, ok := resultData["cpu_spike"].(float64); ok {
+					res.CPUPercent = int(cpu)
+				}
+				if lat, ok := resultData["latency_spike"].(float64); ok {
+					res.LatencyMS = int(lat)
+				}
+				if mem, ok := expMap["memory_mb"].(float64); ok {
+					res.MemoryMB = int(mem)
+				}
+				if l, ok := expMap["latency_ms"].(float64); ok {
+					res.LatencyMS = int(l)
+				}
+				if c, ok := expMap["cpu_percent"].(float64); ok {
+					res.CPUPercent = int(c)
+				}
+				if restored, ok := resultData["restored"].(bool); ok {
+					res.Restored = restored
+				}
 			}
 
-
-
-			
 			allResults[id] = res
 		}
 	}
@@ -360,14 +425,15 @@ func GetResults() (map[string]ExperimentResult, error) {
 
 		for _, exp := range finding.Experiments {
 			id := exp.ExperimentID
-			if id == "" { id = finding.RuleID }
+			if id == "" {
+				id = finding.RuleID
+			}
 			allResults["audit_"+id] = exp
 		}
 	}
 
 	return allResults, nil
 }
-
 
 func GetActiveExperimentCount() (int, []string) {
 	experiments, _ := readJSON(ExperimentsFile)
@@ -404,7 +470,7 @@ func GetExperimentIDsByAgent(agentID string) []string {
 	vaptFindings := GetVAPTFindings()
 	for _, finding := range vaptFindings {
 		ids = append(ids, "audit_"+finding.RuleID)
-		
+
 		for _, exp := range finding.Experiments {
 			if exp.ExperimentID != "" && exp.ExperimentID != finding.RuleID {
 				ids = append(ids, "audit_"+exp.ExperimentID)
@@ -439,10 +505,10 @@ func RecordVAPTResult(ruleID, status, resourceID string) {
 		"rule_id":     ruleID,
 		"status":      status,
 		"resource_id": resourceID,
-		"score":       0.0, 
+		"score":       0.0,
 		"timestamp":   time.Now().Format(time.RFC3339),
 	}
-	
+
 	if status == "PASS" {
 		res["score"] = 100.0
 	}
@@ -456,4 +522,3 @@ func RecordVAPTResult(ruleID, status, resourceID string) {
 	b, _ := json.MarshalIndent(data, "", "  ")
 	os.WriteFile(path, b, 0644)
 }
-
