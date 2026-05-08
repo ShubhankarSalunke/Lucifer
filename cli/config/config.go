@@ -21,19 +21,24 @@ type Config struct {
 func getConfigPath() string {
 	home, err := os.UserHomeDir()
 	if err == nil {
-		return filepath.Join(home, ".lucifer", "config.json")
+		return filepath.Join(home, ".lucifer", "cli", "config.json")
 	}
 	curr, _ := os.Getwd()
-	return filepath.Join(curr, ".lucifer", "config.json")
+	return filepath.Join(curr, ".lucifer", "cli", "config.json")
 }
 
+
 func LoadConfig() Config {
-
 	path := getConfigPath()
-
 	file, err := os.ReadFile(path)
 	if err != nil {
-		return Config{}
+		// Migration Fallback: Try the old path (~/.lucifer/config.json)
+		home, _ := os.UserHomeDir()
+		oldPath := filepath.Join(home, ".lucifer", "config.json")
+		file, err = os.ReadFile(oldPath)
+		if err != nil {
+			return Config{}
+		}
 	}
 
 	var cfg Config
@@ -41,6 +46,7 @@ func LoadConfig() Config {
 
 	return cfg
 }
+
 
 func SaveConfig(cfg Config) error {
 
@@ -58,14 +64,22 @@ func SaveConfig(cfg Config) error {
 }
 
 func GetServerURL() string {
+	envURL := os.Getenv("CHAOS_SERVER_URL")
+	if envURL != "" {
+		return envURL
+	}
+
 	cfg := LoadConfig()
 	if cfg.ServerURL != "" {
 		return cfg.ServerURL
 	}
-	// cfg.ServerURL = "http://localhost:8000"
-	cfg.ServerURL = "https://kzvijk5asj.execute-api.us-east-1.amazonaws.com/"
+	cfg.ServerURL = "http://localhost:8000"
+	// cfg.ServerURL = "https://kzvijk5asj.execute-api.us-east-1.amazonaws.com/"
 	return cfg.ServerURL
+
 }
+
+
 
 func GetToken() string {
 	envToken := os.Getenv("CHAOS_TOKEN")

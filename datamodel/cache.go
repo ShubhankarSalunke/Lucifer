@@ -25,7 +25,7 @@ type QueryCache struct {
 func NewQueryCache() *QueryCache {
 	return &QueryCache{
 		items:       make(map[string]cacheItem),
-		bloomFilter: bloom.NewWithEstimates(10000, 0.01), // 10k items, 1% false positive
+		bloomFilter: bloom.NewWithEstimates(10000, 0.01), 
 	}
 }
 
@@ -42,27 +42,24 @@ func (c *QueryCache) Set(key string, value interface{}, ttl time.Duration) {
 }
 
 func (c *QueryCache) Get(key string) (interface{}, bool) {
-	// 1. Check Bloom Filter first (lock-free fast path)
 	if !c.bloomFilter.Test([]byte(key)) {
-		return nil, false // Definitely not here, skip map lock entirely
+		return nil, false
 	}
 
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	item, found := c.items[key]
-	if !found {
+	item, exists := c.items[key]
+	c.mu.RUnlock()
+
+	if !exists {
 		return nil, false
 	}
 
-	now := time.Now()
-	if now.After(item.expiresAt) {
-		return nil, false
-	}
-
-	// Probabilistic early expiration (X-Fetch) to avoid stampedes
-	timeRemaining := item.expiresAt.Sub(now)
-	if timeRemaining > 0 && timeRemaining < item.ttl/10 {
-		if rand.Float32() < 0.10 { // 10% chance to early expire one requestor
+	if time.Now().After(item.expiresAt) {
+		// Probabilistic early expiration to avoid stampede
+		if rand.Float64() < 0.1 {
+			return nil, false
+		}
+		if time.Now().After(item.expiresAt.Add(item.ttl / 2)) {
 			return nil, false
 		}
 	}
@@ -70,39 +67,26 @@ func (c *QueryCache) Get(key string) (interface{}, bool) {
 	return item.data, true
 }
 
-// Fetch executes a query function with singleflight protection
 func (c *QueryCache) Fetch(key string, ttl time.Duration, fn func() (interface{}, error)) (interface{}, error) {
-	if val, found := c.Get(key); found {
+	if val, ok := c.Get(key); ok {
 		return val, nil
 	}
 
-	// Singleflight - if multiple requests hit this simultaneously, only one runs `fn()`
-	v, err, _ := c.flightGroup.Do(key, func() (interface{}, error) {
-		// Double check in case it was populated while we waited
-		if val, found := c.Get(key); found {
+	// Use singleflight to ensure only one fetch happens for the same key
+	val, err, _ := c.flightGroup.Do(key, func() (interface{}, error) {
+		// Check again in case another goroutine just filled the cache
+		if val, ok := c.Get(key); ok {
 			return val, nil
 		}
 
-		val, computeErr := fn()
-		if computeErr != nil {
-			return nil, computeErr
+		data, err := fn()
+		if err != nil {
+			return nil, err
 		}
 
-		c.Set(key, val, ttl)
-		return val, nil
+		c.Set(key, data, ttl)
+		return data, nil
 	})
 
-	return v, err
-}
-
-// ClearExpired removes all expired items from the cache
-func (c *QueryCache) ClearExpired() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	now := time.Now()
-	for k, v := range c.items {
-		if now.After(v.expiresAt) {
-			delete(c.items, k)
-		}
-	}
+	return val, err
 }

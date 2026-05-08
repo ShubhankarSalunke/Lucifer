@@ -2,13 +2,17 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"time"
 
-	"github.com/joho/godotenv"
+	"lucifer-cli/config"
+
+	"github.com/ShubhankarSalunke/chaos-engineering/datamodel"
+	"github.com/ShubhankarSalunke/lucifer/connectors"
 )
 
 var BASE_URL string
@@ -17,97 +21,49 @@ var DATAMODEL_URL string
 var client = &http.Client{
 	Timeout: 3 * time.Second,
 }
+var authToken string
 
-type ExperimentCreate struct {
-	Type            string `json:"type"`
-	TargetContainer string `json:"target_container"`
-	Duration        int    `json:"duration"`
-	AgentID         string `json:"agent_id"`
-	MemoryMB        int    `json:"memory_mb,omitempty"`
-	AssignedTo      string `json:"assigned_to,omitempty"`
+func SetAuthToken(tok string) {
+	authToken = tok
 }
-
-type ExperimentResult struct {
-	ExperimentID string                 `json:"experiment_id"`
-	Status       string                 `json:"status"`
-	Result       map[string]interface{} `json:"result,omitempty"`
-}
-
-type Agent struct {
-	ID       string `json:"agent_id"`
-	Host     string `json:"host"`
-	LastSeen string `json:"last_seen,omitempty"`
-}
-
-type ComputeMetric struct {
-	CPUUtilization  float64 `json:"cpu_utilization"`
-	NetworkInBytes  float64 `json:"network_in"`
-	NetworkOutBytes float64 `json:"network_out"`
-	DiskReadBytes   float64 `json:"disk_read"`
-	DiskWriteBytes  float64 `json:"disk_write"`
-	StatusFailed    bool    `json:"status_failed"`
-}
-
-type ComputeSummary struct {
-	InstanceID    string        `json:"instance_id"`
-	ComputeMetric ComputeMetric `json:"compute_metric"`
-	Timestamp     string        `json:"timestamp"` // Parse strings easily in TUI
-}
-
-type ComputeAggregate struct {
-	InstanceID      string        `json:"instance_id"`
-	Window          string        `json:"window"`
-	SampleCount     int           `json:"sample_count"`
-	StartedAt       string        `json:"started_at"`
-	EndedAt         string        `json:"ended_at"`
-	Average         ComputeMetric `json:"average"`
-	PeakNetworkBps  float64       `json:"peak_network_bps"`
-	PeakCPUPercent  float64       `json:"peak_cpu_percent"`
-	LatestTimestamp string        `json:"latest_timestamp"`
-}
-
-type FleetAggregate struct {
-	ActiveAgents  int     `json:"active_agents"`
-	AverageCPU    float64 `json:"avg_cpu"`
-	AverageNet    float64 `json:"avg_net"`
-	AverageDisk   float64       `json:"avg_disk"`
-	TotalInbound  float64       `json:"total_inbound"`
-	TotalOutbound float64       `json:"total_outbound"`
-}
-
 func init() {
-	// Try multiple paths to find the .env file
-	for _, p := range []string{"../../.env", "../.env", ".env", "../../../.env"} {
-		if err := godotenv.Load(p); err == nil {
-			break
-		}
-	}
-	BASE_URL = os.Getenv("URL")
-	if BASE_URL == "" {
-		BASE_URL = "http://localhost:8000"
-	}
+	BASE_URL = config.GetServerURL()
+	authToken = config.GetToken()
+
 	DATAMODEL_URL = os.Getenv("DATAMODEL_URL")
 	if DATAMODEL_URL == "" {
 		DATAMODEL_URL = "http://localhost:8001"
 	}
 }
 
-func GetAgents() ([]Agent, error) {
-	response, err := client.Get(BASE_URL + "/agents")
+func doRequest(req *http.Request) (*http.Response, error) {
+	if authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
+	return client.Do(req)
+}
+
+func GetAgents() ([]datamodel.Agent, error) {
+	req, _ := http.NewRequest("GET", BASE_URL+"/agents", nil)
+	response, err := doRequest(req)
 	if err != nil {
 		return nil, err
 	}
+	if response == nil {
+		return nil, fmt.Errorf("empty response from server")
+	}
 	defer response.Body.Close()
+
 	if response.StatusCode != 200 {
 		return nil, fmt.Errorf("Error status code: %d", response.StatusCode)
 	}
 
-	var agents map[string]Agent
+	var agents map[string]datamodel.Agent
 	if err := json.NewDecoder(response.Body).Decode(&agents); err != nil {
 		return nil, err
 	}
 
-	var list []Agent
+	var list []datamodel.Agent
 	for id, a := range agents {
 		a.ID = id
 		list = append(list, a)
@@ -116,32 +72,14 @@ func GetAgents() ([]Agent, error) {
 	return list, nil
 }
 
-func CreateExperiment(exp ExperimentCreate) (ExperimentResult, error) {
-	jsonData, err := json.Marshal(exp)
-	if err != nil {
-		return ExperimentResult{}, err
-	}
-	response, err := client.Post(BASE_URL+"/experiments", "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return ExperimentResult{}, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != 200 {
-		return ExperimentResult{}, fmt.Errorf("Error status code: %d", response.StatusCode)
-	}
-
-	var result ExperimentResult
-
-	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
-		return ExperimentResult{}, err
-	}
-	return result, nil
-}
-
-func GetExperiments() (map[string]interface{}, error) {
-	resp, err := client.Get(fmt.Sprintf("%s/experiments", BASE_URL))
+func GetExperiments() (map[string]datamodel.ExperimentResult, error) {
+	req, _ := http.NewRequest("GET", BASE_URL+"/experiments", nil)
+	resp, err := doRequest(req)
 	if err != nil {
 		return nil, err
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("no response from orchestrator")
 	}
 	defer resp.Body.Close()
 
@@ -149,7 +87,7 @@ func GetExperiments() (map[string]interface{}, error) {
 		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	var exps map[string]interface{}
+	var exps map[string]datamodel.ExperimentResult
 	if err := json.NewDecoder(resp.Body).Decode(&exps); err != nil {
 		return nil, err
 	}
@@ -157,10 +95,21 @@ func GetExperiments() (map[string]interface{}, error) {
 	return exps, nil
 }
 
-func GetComputeMetrics(instanceID string) (*ComputeSummary, error) {
-	resp, err := client.Get(fmt.Sprintf("%s/api/metrics/compute/%s", DATAMODEL_URL, instanceID))
+var resultsCache map[string]datamodel.ExperimentResult
+var lastResultsFetch time.Time
+
+func GetResults() (map[string]datamodel.ExperimentResult, error) {
+	if time.Since(lastResultsFetch) < 2*time.Second && resultsCache != nil {
+		return resultsCache, nil
+	}
+
+	req, _ := http.NewRequest("GET", DATAMODEL_URL+"/api/results", nil)
+	resp, err := doRequest(req)
 	if err != nil {
 		return nil, err
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("no response from orchestrator")
 	}
 	defer resp.Body.Close()
 
@@ -168,11 +117,33 @@ func GetComputeMetrics(instanceID string) (*ComputeSummary, error) {
 		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	var summary ComputeSummary
-	if err := json.NewDecoder(resp.Body).Decode(&summary); err != nil {
+	var results map[string]datamodel.ExperimentResult
+	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
 		return nil, err
 	}
 
+	resultsCache = results
+	lastResultsFetch = time.Now()
+
+	return results, nil
+}
+
+func GetComputeMetrics(instanceID string) (*datamodel.ComputeSummary, error) {
+	url := fmt.Sprintf("%s/api/metrics/compute/live/%s", DATAMODEL_URL, instanceID)
+	req, _ := http.NewRequest("GET", url, nil)
+	resp, err := doRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("datamodel unreachable")
+	}
+	defer resp.Body.Close()
+
+	var summary datamodel.ComputeSummary
+	if err := json.NewDecoder(resp.Body).Decode(&summary); err != nil {
+		return nil, err
+	}
 	return &summary, nil
 }
 func SetExperimentStatus(active bool) error {
@@ -185,11 +156,15 @@ func SetExperimentStatus(active bool) error {
 	return nil
 }
 
-func GetComputeHistory(instanceID string, duration time.Duration) ([]ComputeSummary, error) {
+func GetComputeHistory(instanceID string, duration time.Duration) ([]datamodel.ComputeSummary, error) {
 	url := fmt.Sprintf("%s/api/metrics/compute/history/%s?duration=%s", DATAMODEL_URL, instanceID, duration.String())
-	resp, err := client.Get(url)
+	req, _ := http.NewRequest("GET", url, nil)
+	resp, err := doRequest(req)
 	if err != nil {
 		return nil, err
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("no response from datamodel")
 	}
 	defer resp.Body.Close()
 
@@ -197,7 +172,7 @@ func GetComputeHistory(instanceID string, duration time.Duration) ([]ComputeSumm
 		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	var history []ComputeSummary
+	var history []datamodel.ComputeSummary
 	if err := json.NewDecoder(resp.Body).Decode(&history); err != nil {
 		return nil, err
 	}
@@ -205,11 +180,15 @@ func GetComputeHistory(instanceID string, duration time.Duration) ([]ComputeSumm
 	return history, nil
 }
 
-func GetComputeHistoryForScope(instanceID, scope string) ([]ComputeSummary, error) {
+func GetComputeHistoryForScope(instanceID, scope string) ([]datamodel.ComputeSummary, error) {
 	url := fmt.Sprintf("%s/api/metrics/compute/history/%s?scope=%s", DATAMODEL_URL, instanceID, scope)
-	resp, err := client.Get(url)
+	req, _ := http.NewRequest("GET", url, nil)
+	resp, err := doRequest(req)
 	if err != nil {
 		return nil, err
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("no response from datamodel")
 	}
 	defer resp.Body.Close()
 
@@ -217,7 +196,7 @@ func GetComputeHistoryForScope(instanceID, scope string) ([]ComputeSummary, erro
 		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	var history []ComputeSummary
+	var history []datamodel.ComputeSummary
 	if err := json.NewDecoder(resp.Body).Decode(&history); err != nil {
 		return nil, err
 	}
@@ -225,13 +204,15 @@ func GetComputeHistoryForScope(instanceID, scope string) ([]ComputeSummary, erro
 	return history, nil
 }
 
-
-
-func GetComputeAggregate(instanceID, window string) (*ComputeAggregate, error) {
+func GetComputeAggregate(instanceID, window string) (*datamodel.ComputeAggregate, error) {
 	url := fmt.Sprintf("%s/api/metrics/compute/aggregate/%s?window=%s", DATAMODEL_URL, instanceID, window)
-	resp, err := client.Get(url)
+	req, _ := http.NewRequest("GET", url, nil)
+	resp, err := doRequest(req)
 	if err != nil {
 		return nil, err
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("no response from datamodel")
 	}
 	defer resp.Body.Close()
 
@@ -239,7 +220,7 @@ func GetComputeAggregate(instanceID, window string) (*ComputeAggregate, error) {
 		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	var aggregate ComputeAggregate
+	var aggregate datamodel.ComputeAggregate
 	if err := json.NewDecoder(resp.Body).Decode(&aggregate); err != nil {
 		return nil, err
 	}
@@ -247,46 +228,61 @@ func GetComputeAggregate(instanceID, window string) (*ComputeAggregate, error) {
 	return &aggregate, nil
 }
 
-func GetFleetAggregate() (*FleetAggregate, error) {
-	resp, err := client.Get(DATAMODEL_URL + "/api/metrics/fleet/aggregate")
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+// SyncAgents performs discovery by reading the AWS credentials from the local CLI config
+func SyncAgents() error {
+	cfg := config.LoadConfig()
+	if cfg.Token == "" {
+		return fmt.Errorf("auth required: run 'lucifer login' first")
 	}
 
-	var aggregate FleetAggregate
-	if err := json.NewDecoder(resp.Body).Decode(&aggregate); err != nil {
-		return nil, err
+	awsCfg := connectors.AWSConfig{
+		AccessKey:  cfg.AWS.AccessKey,
+		SecretKey:  cfg.AWS.SecretKey,
+		Region:     cfg.AWS.Region,
+		RoleARN:    cfg.AWS.RoleArn,
+		ExternalID: cfg.AWS.ExternalId,
 	}
 
-	return &aggregate, nil
+	_, err := datamodel.DiscoverAgents(context.Background(), awsCfg)
+	return err
 }
-func GetDiscoveredAgents() ([]Agent, error) {
-	resp, err := client.Get(DATAMODEL_URL + "/api/metrics/discovered")
+
+func GetFleetAggregate() (*datamodel.FleetStats, error) {
+	return datamodel.GetFleetStats()
+}
+func GetDiscoveredAgents() ([]datamodel.Agent, error) {
+	req, _ := http.NewRequest("GET", DATAMODEL_URL+"/api/agents", nil)
+	resp, err := doRequest(req)
 	if err != nil {
 		return nil, err
 	}
+	if resp == nil {
+		return nil, fmt.Errorf("datamodel unreachable")
+	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	var instances []string
-	if err := json.NewDecoder(resp.Body).Decode(&instances); err != nil {
+	var list []datamodel.Agent
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
 		return nil, err
-	}
-
-	var list []Agent
-	for _, id := range instances {
-		list = append(list, Agent{
-			ID:   id,
-			Host: "Autodiscovered (InfluxDB)",
-		})
 	}
 	return list, nil
+}
+
+func GetHistoricalExperiments(reportID string) ([]datamodel.ExperimentRecord, error) {
+	req, _ := http.NewRequest("GET", fmt.Sprintf("%s/api/experiments?report_id=%s", DATAMODEL_URL, reportID), nil)
+	resp, _ := doRequest(req)
+	if resp == nil {
+		return nil, fmt.Errorf("datamodel unreachable")
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("experiments fetch failed (%d)", resp.StatusCode)
+	}
+
+	var records []datamodel.ExperimentRecord
+	if err := json.NewDecoder(resp.Body).Decode(&records); err != nil {
+		return nil, err
+	}
+	return records, nil
 }

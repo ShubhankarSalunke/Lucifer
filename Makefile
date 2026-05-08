@@ -1,17 +1,5 @@
 .PHONY: run-all gateway datamodel ui ui-help metrics agent
 
-gateway:
-	@echo "Starting API Gateway (Port 8000)..."
-	@cd chaos-engineering/orchestrator && PORT=8000 go run .
-
-datamodel:
-	@echo "Starting Datamodel Server (Port 8001)..."
-	@cd datamodel && PORT=8001 go run cmd/main.go
-
-metrics:
-	@echo "Starting CloudWatch Metrics Fetcher..."
-	@cd datamodel && go run cmd/aws_fetcher/main.go
-
 agent:
 	@echo "Starting Chaos Agent..."
 	@cd chaos-engineering/agent && go run agent.go
@@ -23,6 +11,23 @@ ui:
 
 ui-help:
 	@cd UI && go run cmd/main.go --help
+
+build:
+	@echo "Building Lucifer Toolset..."
+	@mkdir -p bin
+	@echo " -> Compiling CLI (lucifer)..."
+	@cd cli && go build -o ../bin/lucifer main.go
+	@echo " -> Compiling Datamodel Server..."
+	@cd datamodel && go build -o ../bin/lucifer-datamodel cmd/server/main.go
+	@echo " -> Compiling UI..."
+	@cd UI && go build -o ../bin/lucifer-ui cmd/main.go
+	@echo " Build complete! Binaries are in the 'bin/' directory."
+
+install: build
+	@sudo cp bin/lucifer /usr/local/bin/lucifer
+	@sudo cp bin/lucifer-datamodel /usr/local/bin/lucifer-datamodel
+	@sudo cp bin/lucifer-ui /usr/local/bin/lucifer-ui
+	@echo " Installation complete"
 
 clean:
 	@echo "Cleaning up ghost processes on ports 8000, 8001..."

@@ -1,4 +1,4 @@
-Fields: Comprised of fieldKeys and fieldValues. Fields are required and are not indexed. This means that Queries using Fields to filter data are relatively slow.
+ Fields: Comprised of fieldKeys and fieldValues. Fields are required and are not indexed. This means that Queries using Fields to filter data are relatively slow.
 
 Tags: Comprised of tagKeys and tagValues. Tags are optional and can be indexed. This means that Queries using Tags are much faster than their Fields counterpart.
 

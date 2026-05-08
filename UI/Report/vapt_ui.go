@@ -6,11 +6,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
-
+	"github.com/adigajjar/security-audit/rules"
 	glamour "github.com/charmbracelet/glamour"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+	"gopkg.in/yaml.v3"
 )
 
 type Vulnerability struct {
@@ -51,17 +53,68 @@ func getSeverityColor(sev string) string {
 	}
 }
 
-func parseMarkdown() []Vulnerability {
-	reportPath := filepath.Join("..", "..", "Lucifer", "security-audit", "vapt_report.md")
-	data, err := os.ReadFile(reportPath)
-	if err != nil {
-		data, err = os.ReadFile("vapt_report.md")
-		if err != nil {
-			return nil
+var found bool = true
+
+func resolvePath(path string) string {
+	if _, err := os.Stat(path); err == nil { return path }
+	if _, err := os.Stat("../" + path); err == nil { return "../" + path }
+	if _, err := os.Stat("../../" + path); err == nil { return "../../" + path }
+	return path
+}
+
+func GetReport() []byte {
+	path := resolvePath("security-audit/vapt_report_aws.md")
+	if data, err := os.ReadFile(path); err == nil {
+		found = true
+		return data
+	}
+	found = false
+	return nil
+}
+
+func saveRule(rule rules.Rule) error {
+	path := "custom_rules.yaml"
+
+	var custom rules.Rules
+	data, _ := os.ReadFile(path)
+	_ = yaml.Unmarshal(data, &custom)
+
+	existingPath := resolvePath("security-audit/rules/rules.yaml")
+	var existing rules.Rules
+	data2, _ := os.ReadFile(existingPath)
+	_ = yaml.Unmarshal(data2, &existing)
+
+	for _, r := range existing.Rules {
+		if r.ID == rule.ID {
+			return fmt.Errorf("rule already exists")
+		}
+	}
+	for _, r := range custom.Rules {
+		if r.ID == rule.ID {
+			return fmt.Errorf("custom rule already exists")
 		}
 	}
 
-	content := string(data)
+	custom.Rules = append(custom.Rules, rule)
+	out, _ := yaml.Marshal(custom)
+	return os.WriteFile(path, out, 0644)
+}
+
+func parseValue(v string) interface{} {
+	if i, err := strconv.Atoi(v); err == nil {
+		return i
+	}
+	if b, err := strconv.ParseBool(v); err == nil {
+		return b
+	}
+	if f, err := strconv.ParseFloat(v, 64); err == nil {
+		return f
+	}
+	return v
+}
+
+func parseMarkdown() []Vulnerability {
+	content := string(GetReport())
 	if idx := strings.Index(content, "## Detailed Findings"); idx != -1 {
 		content = content[idx:]
 	}
@@ -122,12 +175,9 @@ func extractField(content, field string) string {
 	match := re.FindStringSubmatch(content)
 	if len(match) > 1 {
 		val := strings.TrimSpace(match[1])
-
-		// 🔥 CLEAN MARKDOWN
 		val = strings.ReplaceAll(val, "**", "")
 		val = strings.ReplaceAll(val, "__", "")
 		val = strings.ReplaceAll(val, "`", "")
-
 		return val
 	}
 	return "N/A"
@@ -135,22 +185,40 @@ func extractField(content, field string) string {
 
 func trimRendered(s string) string {
 	lines := strings.Split(s, "\n")
-
 	max := 20
 	if len(lines) > max {
 		lines = lines[:max]
 		lines = append(lines, "... (truncated)")
 	}
-
 	for i := range lines {
 		lines[i] = strings.TrimSpace(lines[i])
 	}
-
 	return strings.Join(lines, "\n")
 }
 
+func isTyping(p tview.Primitive) bool {
+	switch v := p.(type) {
+	case *tview.InputField:
+		return v.HasFocus()
+	case *tview.Form:
+		return true
+	default:
+		return false
+	}
+}
+
 func GetVaptReportView() tview.Primitive {
+	reportData := GetReport()
+	if reportData == nil || !found {
+		return tview.NewTextView().
+			SetDynamicColors(true).
+			SetTextAlign(tview.AlignCenter).
+			SetText("\n\n[gray]VAPT Report Not Found[-]\n[white]Please run a security scan first:[-]\n[cyan]security-audit aws all[-]").
+			SetBorder(true).
+			SetTitle(" VAPT REPORT ")
+	}
 	vulns := parseMarkdown()
+
 	var filteredVulns []Vulnerability
 
 	flex := tview.NewFlex().SetDirection(tview.FlexRow)
@@ -197,6 +265,49 @@ func GetVaptReportView() tview.Primitive {
 		glamour.WithStylePath("Report/my-theme.json"),
 		glamour.WithWordWrap(0),
 	)
+	downloadBtn := tview.NewButton("Download").SetSelectedFunc(func() {
+		data := GetReport()
+		dst := filepath.Join(".", "vapt_report.md")
+		err := os.WriteFile(dst, data, 0644)
+		if err != nil {
+			detailView.SetText("Error in Writing file")
+			return
+		}
+		detailView.SetText("Report saved successfully")
+	})
+	rightPane := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(detailView, 0, 1, false).
+		AddItem(downloadBtn, 1, 0, false)
+
+	form := tview.NewForm()
+	var rule rules.Rule
+	form.SetFieldBackgroundColor(tcell.NewRGBColor(40, 45, 70))
+	form.SetFieldTextColor(tcell.ColorWhite)
+	form.AddInputField("ID", "", 20, nil, func(t string) { rule.ID = t })
+	form.AddInputField("Name", "", 40, nil, func(t string) { rule.Name = t })
+	form.SetButtonBackgroundColor(tcell.ColorDarkCyan)
+	form.SetButtonTextColor(tcell.ColorWhite)
+	form.AddDropDown("Severity",
+		[]string{"CRITICAL", "HIGH", "MEDIUM", "LOW"},
+		0,
+		func(opt string, _ int) { rule.Severity = opt  },
+		
+	)
+	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEnter {
+			return tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone)
+		}
+		return event
+	})
+	form.AddInputField("Description", "", 60, nil, func(t string) { rule.Description = t })
+	form.AddInputField("Type", "", 30, nil, func(t string) { rule.Type = t })
+	form.AddInputField("Operator", "equals", 20, nil, func(t string) { rule.Check.Operator = t })
+	form.AddInputField("Value", "", 20, nil, func(t string) { rule.Check.Value = parseValue(t) })
+	form.AddInputField("Remediation", "", 60, nil, func(t string) { rule.Remediation = t })
+	form.SetBorder(true).SetTitle(" ADD CUSTOM VAPT RULE ").SetBorderColor(tcell.ColorDarkCyan)
+	form.AddButton("Save Rule", func() {
+		_ = saveRule(rule)
+	})
 
 	populateList := func() {
 		list.Clear()
@@ -264,6 +375,10 @@ func GetVaptReportView() tview.Primitive {
 
 		desc := extractField(v.Content, "Description")
 		rem := extractField(v.Content, "Remediation")
+		remediationText := fmt.Sprintf("\n[::b]Remediation[::-]\n[#cfcfcf]%s[-]\n", rem)
+		if strings.ToUpper(v.Status) == "PASS" {
+			remediationText = ""
+		}
 
 		rendered, err := renderer.Render(v.Content)
 		if err != nil {
@@ -287,10 +402,7 @@ func GetVaptReportView() tview.Primitive {
 [#cfcfcf]%s[-]
 
 [gray]──────────────────────────────────────────────[-]
-
-[::b]Remediation[::-]
-[#cfcfcf]%s[-]
-
+%s
 [gray]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[-]
 
 [gray::i]Full Technical Details (sanitized)[-]
@@ -302,9 +414,10 @@ func GetVaptReportView() tview.Primitive {
 			v.Severity,
 			statusText,
 			desc,
-			rem,
+			remediationText,
 			tview.TranslateANSI(trimRendered(rendered)),
 		))
+
 	}
 
 	list.SetChangedFunc(func(int, string, string, rune) {
@@ -336,10 +449,23 @@ func GetVaptReportView() tview.Primitive {
 
 	body := tview.NewFlex().
 		AddItem(list, 0, 1, true).
-		AddItem(detailView, 0, 2, false)
+		AddItem(rightPane, 0, 2, false)
 
 	flex.AddItem(filterFlex, 5, 0, true)
 	flex.AddItem(body, 0, 1, false)
+	flex.AddItem(form, 8, 0, false)
 
-	return flex
+	pages := tview.NewPages()
+	pages.AddPage("main", flex, true, true)
+	pages.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		_, focus := pages.GetFrontPage()
+
+		if isTyping(focus) || form.HasFocus() {
+			return event
+		}
+
+		return event
+	})
+
+	return pages
 }

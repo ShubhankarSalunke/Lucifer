@@ -12,13 +12,30 @@ import (
 	"time"
 
 	report "cli/Report"
+	"cli/api"
 	"cli/tui"
+
+	"lucifer-cli/config"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
 
+var (
+	history      []string
+	historyIndex int
+)
+
+func initToken() {
+	tok := config.GetToken()
+	if tok != "" {
+		api.SetAuthToken(tok)
+	}
+}
+
 func main() {
+	initToken()
+
 	if len(os.Args) > 1 && (os.Args[1] == "--help" || os.Args[1] == "-h") {
 		fmt.Println(`
 		CHAOS CONTROL TERMINAL - Help
@@ -29,24 +46,25 @@ func main() {
 
 		Navigation:
 		Press Esc        Return to tab navigation bar
-		Press 1          Switch to Monitor Dashboard
-		Press 2          Switch to Lucifer CLI
-		Press 3          Switch to VAPT Security Report
-		Press 4 or q     Exit
+		Press Tab        Cycle through dashboard tabs
+		Press q          Exit
 		`)
 		os.Exit(0)
 	}
 
-	state := "Monitor"
+	state := "Intro"
 	for {
 		switch state {
+		case "Intro":
+			state = tui.RunIntro()
 		case "Monitor":
-			if err := tui.RunTermUIMonitor(); err != nil {
-				log.Printf("failed to run termui monitor: %v", err)
-			}
-			state = "Main"
-		default:
+			state = tui.RunTermUIMonitor()
+		case "Main":
 			state = runCLI()
+		case "Quit":
+			return
+		default:
+			state = "Intro"
 		}
 		if state == "Quit" {
 			break
@@ -73,14 +91,14 @@ func tabLabel(active string) string {
 }
 
 func runCLI() string {
-	tview.Styles.PrimitiveBackgroundColor = tcell.NewRGBColor(12, 12, 14)
-	tview.Styles.ContrastBackgroundColor = tcell.NewRGBColor(20, 20, 24)
-	tview.Styles.MoreContrastBackgroundColor = tcell.NewRGBColor(28, 28, 32)
-	tview.Styles.BorderColor = tcell.NewRGBColor(60, 60, 70)
-	tview.Styles.TitleColor = tcell.NewRGBColor(180, 180, 200)
-	tview.Styles.PrimaryTextColor = tcell.NewRGBColor(220, 220, 230)
-	tview.Styles.SecondaryTextColor = tcell.NewRGBColor(140, 140, 160)
-	tview.Styles.TertiaryTextColor = tcell.NewRGBColor(90, 90, 110)
+	tview.Styles.PrimitiveBackgroundColor = tui.TrueBlack
+	tview.Styles.ContrastBackgroundColor = tui.TrueBlack
+	tview.Styles.MoreContrastBackgroundColor = tui.TrueBlack
+	tview.Styles.BorderColor = tcell.NewRGBColor(30, 60, 90)
+	tview.Styles.TitleColor = tcell.NewRGBColor(150, 150, 180)
+	tview.Styles.PrimaryTextColor = tcell.ColorWhite
+	tview.Styles.SecondaryTextColor = tcell.ColorSilver
+	tview.Styles.TertiaryTextColor = tcell.ColorGray
 
 	app := tview.NewApplication()
 	var nextState string = "Quit"
@@ -116,39 +134,55 @@ func runCLI() string {
 	pages := tview.NewPages()
 
 	termOutput := tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
-	termOutput.SetBorder(true).SetTitle(" LUCIFER SESSION OUTPUT ").SetTitleColor(tcell.ColorGreen)
-	fmt.Fprintf(termOutput, "[gray]Lucifer CLI Terminal ready. Type 'help', 'signup <email>', or 'login <token>' to begin.[-]\n\n")
+	termOutput.SetBorder(true).SetTitle(" CHAOS SESSION ").SetTitleColor(tcell.ColorGreen).SetBackgroundColor(tui.TrueBlack)
+	fmt.Fprintf(termOutput, "[gray]CHAOS CLI ready.[-] Type [white]signup <email>[-] to register, or [white]login <token>[-] if you already have a token.\n\n")
 
 	nextStepBox := tview.NewTextView().SetDynamicColors(true).
 		SetWrap(true)
 	nextStepBox.SetBorder(true).
-		SetTitle(" NEXT BEST STEP ").
-		SetTitleColor(tcell.ColorYellow)
+		SetTitle(" SUGGESTED STEPS ").
+		SetTitleColor(tcell.ColorYellow).
+		SetBackgroundColor(tui.TrueBlack)
 	nextStepBox.SetText("[yellow]Start here:[-] `signup <email>` if you are new, or `login <token>` if you already have a Chaos API token.\n[gray]After auth:[-] try `create-agent --agent <instance-id>` or `create-experiment --type cpu_stress --agent <id> --duration 30 --cpu 40`.")
 
 	termInput := tview.NewInputField().SetLabel("[green]> [-]").SetFieldWidth(0)
-	termInput.SetBorder(true).SetTitle(" INTERACTIVE COMMANDS ").SetTitleColor(tcell.ColorGreen)
+	termInput.SetBorder(true).SetTitle(" COMMANDS ").SetTitleColor(tcell.ColorGreen)
+	termInput.SetBackgroundColor(tui.TrueBlack)
 
-	resolveLuciferCLIDir := func() (string, error) {
-		candidates := []string{
-			filepath.Join("..", "..", "..", "Lucifer", "cli"),
-			filepath.Join("..", "..", "Lucifer", "cli"),
-			filepath.Join("Lucifer", "cli"),
+	termInput.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyUp {
+			if historyIndex > 0 {
+				historyIndex--
+				termInput.SetText(history[historyIndex])
+			}
+			return nil
+		}
+		if event.Key() == tcell.KeyDown {
+			if historyIndex < len(history)-1 {
+				historyIndex++
+				termInput.SetText(history[historyIndex])
+			} else {
+				historyIndex = len(history)
+				termInput.SetText("")
+			}
+			return nil
+		}
+		return event
+	})
+
+	resolveLuciferBin := func() (string, error) {
+		if bin := "./lucifer"; func() bool { _, err := os.Stat(bin); return err == nil }() {
+			abspath, _ := filepath.Abs(bin)
+			return abspath, nil
 		}
 
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", err
-		}
-
-		for _, candidate := range candidates {
-			dir := filepath.Clean(filepath.Join(cwd, candidate))
-			if _, err := os.Stat(filepath.Join(dir, "main.go")); err == nil {
-				return dir, nil
+		if self, err := os.Executable(); err == nil {
+			if bin := filepath.Join(filepath.Dir(self), "lucifer"); func() bool { _, err := os.Stat(bin); return err == nil }() {
+				return bin, nil
 			}
 		}
 
-		return "", fmt.Errorf("could not locate Lucifer CLI directory from %s", cwd)
+		return exec.LookPath("lucifer")
 	}
 
 	termInput.SetDoneFunc(func(key tcell.Key) {
@@ -157,34 +191,27 @@ func runCLI() string {
 			if cmdText == "" {
 				return
 			}
+			history = append(history, cmdText)
+			historyIndex = len(history)
 			termInput.SetText("")
 
 			fmt.Fprintf(termOutput, "[white::b]> %s[-] \n", cmdText)
 
 			go func(c string) {
 				args := strings.Fields(c)
-				if len(args) == 0 {
-					return
+				if args[0] == "lucifer" {
+					args = args[1:]
 				}
-
-				cliDir, err := resolveLuciferCLIDir()
-				if err != nil {
-					app.QueueUpdateDraw(func() {
-						fmt.Fprintf(termOutput, "[red]CLI path resolution failed: %v[-]\n", err)
-						termOutput.ScrollToEnd()
-					})
+				if len(args) == 0 {
 					return
 				}
 
 				stdinPayload := []byte(nil)
 				switch args[0] {
 				case "login":
-					app.QueueUpdateDraw(func() {
-						nextStepBox.SetText("[yellow]Logging in:[-] paste your token after `login`.\n[gray]After a successful login:[-] try `create-agent --agent <instance-id>` to bind an agent, then `create-experiment ...`.")
-					})
 					if len(args) < 2 {
 						app.QueueUpdateDraw(func() {
-							fmt.Fprintf(termOutput, "[yellow]Usage in TUI: login <token>[-]\n")
+							fmt.Fprintf(termOutput, "[yellow]Usage: login <token>[-]\n")
 							termOutput.ScrollToEnd()
 						})
 						return
@@ -192,47 +219,47 @@ func runCLI() string {
 					stdinPayload = []byte(args[1] + "\n")
 					args = []string{"login"}
 				case "signup":
-					app.QueueUpdateDraw(func() {
-						nextStepBox.SetText("[yellow]Signing up:[-] use your email after `signup`.\n[gray]After signup finishes:[-] your token is saved, so the next step is usually `create-agent --agent <instance-id>`.")
-					})
 					userID := ""
 					if len(args) > 1 {
 						userID = strings.Join(args[1:], " ")
 					}
 					stdinPayload = []byte(userID + "\n")
 					args = []string{"signup"}
-				case "help":
-					app.QueueUpdateDraw(func() {
-						nextStepBox.SetText("[yellow]Helpful flow:[-] `signup <email>` or `login <token>` first.\nThen use `create-agent --agent <instance-id>`.\nThen launch chaos with `create-experiment --type cpu_stress --agent <id> --duration 30 --cpu 40`.")
-					})
-				case "create-agent":
-					app.QueueUpdateDraw(func() {
-						nextStepBox.SetText("[yellow]After create-agent:[-] run `create-experiment --type cpu_stress --agent <id> --duration 30 --cpu 40` or another supported experiment type.")
-					})
-				case "create-experiment":
-					app.QueueUpdateDraw(func() {
-						nextStepBox.SetText("[yellow]After create-experiment:[-] switch to Monitor to watch live metrics, or run another experiment against a different agent.")
-					})
-				default:
-					app.QueueUpdateDraw(func() {
-						nextStepBox.SetText("[yellow]Suggested next step:[-] if this command needs auth, run `signup <email>` or `login <token>` first.\n[gray]Otherwise:[-] try `help` to see the Lucifer command flow.")
-					})
 				}
 
-				cmd := exec.Command("go", append([]string{"run", "main.go"}, args...)...)
-				cmd.Dir = cliDir
-				cmd.Env = append(os.Environ(), "CHAOS_SERVER_URL=http://localhost:8000")
-				if stdinPayload != nil {
-					cmd.Stdin = bytes.NewReader(stdinPayload)
+				
+				cliMain := "main.go"
+				cliPath := "../cli"
+				var command *exec.Cmd
+				if _, err := os.Stat(filepath.Join(cliPath, cliMain)); err == nil {
+					command = exec.Command("go", "run", cliMain)
+					command.Dir = cliPath
+				} else {
+					binPath, _ := resolveLuciferBin()
+					command = exec.Command(binPath)
 				}
-				out, err := cmd.CombinedOutput()
+				
+				command.Args = append(command.Args, args...)
+
+				command.Env = append(os.Environ(), "CHAOS_SERVER_URL=http://localhost:8000")
+				if stdinPayload != nil {
+					command.Stdin = bytes.NewReader(stdinPayload)
+				}
+				out, err := command.CombinedOutput()
 
 				app.QueueUpdateDraw(func() {
 					if err != nil {
-						fmt.Fprintf(termOutput, "[red]Execution Failure: %v[-]\n", err)
+						fmt.Fprintf(termOutput, "[red]Error: %v[-]\n", err)
 					}
 					fmt.Fprintf(termOutput, "%s\n", string(out))
 					termOutput.ScrollToEnd()
+
+					// RELOAD TOKEN
+					tok := config.GetToken()
+					if tok != "" {
+						api.SetAuthToken(tok)
+						notificationBar.SetText(fmt.Sprintf("[green]Auth Refreshed[-] | Token: %s...", tok[:8]))
+					}
 				})
 			}(cmdText)
 		}
@@ -252,7 +279,8 @@ func runCLI() string {
 		return event
 	})
 
-	pages.AddPage("1", luciferFlex, true, false)
+	pages.AddPage("1", luciferFlex, true, true)
+	app.SetFocus(termInput)
 
 	vaptView := report.GetVaptReportView()
 	pages.AddPage("2", vaptView, true, false)
@@ -287,27 +315,40 @@ func runCLI() string {
 
 	root := tview.NewFlex().AddItem(nil, 0, 1, false).AddItem(inner, 120, 0, true).AddItem(nil, 0, 1, false)
 
+	
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyEscape {
 			app.SetFocus(tabBar)
 			return nil
 		}
-		if app.GetFocus() == tabBar {
-			switch event.Rune() {
-			case '1':
-				tabBar.Highlight("0")
-				return nil
-			case '2':
-				tabBar.Highlight("1")
-				return nil
-			case '3':
-				tabBar.Highlight("2")
-				return nil
-			case '4', 'q':
+		
+		if _, ok := app.GetFocus().(*tview.InputField); ok {
+			return event
+		}
+
+		if event.Key() == tcell.KeyTab {
+			current := tabBar.GetHighlights()
+			if len(current) > 0 {
+				next := "0"
+				switch current[0] {
+				case "0": next = "1"
+				case "1": next = "2"
+				case "2": next = "3"
+				case "3": next = "0"
+				}
+				tabBar.Highlight(next)
+			}
+			return nil
+		}
+
+		switch event.Rune() {
+		case 'q':
+			if app.GetFocus() != termInput {
 				tabBar.Highlight("3")
 				return nil
 			}
 		}
+
 		return event
 	})
 

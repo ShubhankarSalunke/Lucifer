@@ -1,7 +1,7 @@
 .PHONY: run cli
 
 run:
-	go run ./cmd/main.go
+	/usr/local/go/bin/go run ./cmd/main.go
 
 cli:
-	go run ./cmd/main.go
+	/usr/local/go/bin/go run ./cmd/main.go

@@ -2,530 +2,680 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
+	"math"
 
 	"cli/api"
 
 	ui "github.com/gizak/termui/v3"
 	"github.com/gizak/termui/v3/widgets"
+	"github.com/rivo/tview"
+	"github.com/ShubhankarSalunke/chaos-engineering/datamodel"
 )
 
-func RunTermUIMonitor() error {
+
+// MonitorState stores the history for the termui dashboard so it persists across tab switches
+type MonitorState struct {
+	CPUHistory  []float64
+	MemHistory  []float64
+	LatHistory  []float64
+
+
+
+	FeedLines   []string
+	SelectedIdx int
+	ExpIdx              int
+	LastExpSeen         map[string]bool
+	LastSelectedAgentID string
+}
+
+
+var GlobalMonitorState = &MonitorState{
+	CPUHistory:  make([]float64, 50),
+	MemHistory:  make([]float64, 50),
+	LatHistory:  make([]float64, 50),
+
+	FeedLines:   make([]string, 0),
+	LastExpSeen: make(map[string]bool),
+}
+
+
+
+func RunIntro() string {
+	app := tview.NewApplication()
+	tview.Styles.PrimitiveBackgroundColor = TrueBlack
+	
+	next := "Quit"
+	intro := NewIntroScreen(app, func() {
+		next = "Main"
+		app.Stop()
+	})
+
+	if err := app.SetRoot(intro, true).Run(); err != nil {
+		return "Quit"
+	}
+	return next
+}
+
+
+func RunTermUIMonitor() string {
 	if err := ui.Init(); err != nil {
-		return err
+		fmt.Printf("failed to initialize termui: %v\n", err)
+		return "Main"
 	}
 	defer ui.Close()
 
-	viewMode := "live"
-	aggregateWindow := "overall"
-	selectedAgent := 0
-	var agentsData []api.Agent
-	var feedLines []string
+	selectedAgent := GlobalMonitorState.SelectedIdx
+	selectedExp := GlobalMonitorState.ExpIdx
+	activeList := "agents"
 
-	pushFeed := func(line string) {
-		feedLines = append(feedLines, line)
-		if len(feedLines) > 10 {
-			feedLines = feedLines[len(feedLines)-10:]
-		}
-	}
-
-	densifySeries := func(values []float64, target int) []float64 {
-		if len(values) == 0 {
-			return []float64{0, 0}
-		}
-		if len(values) == 1 {
-			return []float64{values[0], values[0]}
-		}
-		if target <= len(values) {
-			return values
-		}
-
-		out := make([]float64, target)
-		last := float64(len(values) - 1)
-		for i := 0; i < target; i++ {
-			pos := (float64(i) / float64(target-1)) * last
-			left := int(pos)
-			right := left + 1
-			if right >= len(values) {
-				right = len(values) - 1
-			}
-			frac := pos - float64(left)
-			out[i] = values[left] + (values[right]-values[left])*frac
-		}
-		return out
-	}
-
-	sparklineSeries := func(values []float64) ([]float64, float64) {
-		values = densifySeries(values, 48)
-		if len(values) == 0 {
-			return []float64{0}, 1
-		}
-
-		minVal := values[0]
-		maxVal := values[0]
-		for _, v := range values[1:] {
-			if v < minVal {
-				minVal = v
-			}
-			if v > maxVal {
-				maxVal = v
-			}
-		}
-
-		rng := maxVal - minVal
-		if rng <= 0 {
-			return []float64{0, 0}, 1
-		}
-
-		out := make([]float64, len(values))
-		padding := rng * 0.15
-		for i, v := range values {
-			out[i] = (v - minVal) + padding
-		}
-		return out, rng + padding
-	}
-
-	safeSeries := func(values []float64) []float64 {
-		switch len(values) {
-		case 0:
-			return []float64{0, 0}
-		case 1:
-			return []float64{values[0], values[0]}
-		default:
-			return values
-		}
-	}
-
-	maxOrDefault := func(values []float64, fallback float64) float64 {
-		maxVal := 0.0
-		for _, v := range values {
-			if v > maxVal {
-				maxVal = v
-			}
-		}
-		if maxVal <= 0 {
-			return fallback
-		}
-		return maxVal
-	}
-
-	safePieData := func(values []float64) []float64 {
-		total := 0.0
-		for _, v := range values {
-			total += v
-		}
-		if total <= 0 {
-			return []float64{1}
-		}
-		return values
+	ensureHistory := func(s []float64) []float64 {
+		if len(s) == 0 { return []float64{0, 0} }
+		if len(s) == 1 { return []float64{s[0], s[0]} }
+		return s
 	}
 
 	header := widgets.NewParagraph()
 	header.Title = "Chaos Monitor"
-	header.Text = "[ q ] quit  [ up/down ] agents  [ l ] live  [ n ] normal  [ w ] overall/10m"
+	header.Text = "[ q ] back  [ 1 ] agents  [ 2 ] history  [ tab ] switch  [ j/k ] scroll"
 	header.BorderStyle.Fg = ui.ColorCyan
-	header.TitleStyle.Fg = ui.ColorGreen
-	header.TextStyle.Fg = ui.ColorWhite
 
-	metrics := widgets.NewTable()
-	metrics.Title = "System Health"
-	metrics.RowSeparator = false
-	metrics.TextStyle = ui.NewStyle(ui.ColorWhite)
-	metrics.RowStyles[0] = ui.NewStyle(ui.ColorGreen, ui.ColorClear, ui.ModifierBold)
-	metrics.BorderStyle.Fg = ui.ColorCyan
-	metrics.TitleStyle.Fg = ui.ColorGreen
+	metricsTable := widgets.NewTable()
+	metricsTable.Title = " System Health "
+	metricsTable.RowSeparator = false
+	metricsTable.BorderStyle.Fg = ui.ColorCyan
+	metricsTable.Rows = [][]string{
+		{"Metric", "Value", "Status"},
+	}
 
 	feed := widgets.NewParagraph()
-	feed.Title = "Live Telemetry Stream"
-	feed.WrapText = false
+	feed.Title = "Live Activity Feed (Pinned: Active)"
 	feed.BorderStyle.Fg = ui.ColorCyan
-	feed.TitleStyle.Fg = ui.ColorGreen
 
 	agentList := widgets.NewList()
-	agentList.Title = "Discovered Host Agents"
-	agentList.WrapText = false
-	agentList.BorderStyle.Fg = ui.ColorWhite
-	agentList.TitleStyle.Fg = ui.ColorGreen
-	agentList.SelectedRowStyle = ui.NewStyle(ui.ColorBlack, ui.ColorCyan, ui.ModifierBold)
+	agentList.Title = " Agents (1) "
+	agentList.BorderStyle.Fg = ui.ColorYellow
+	agentList.SelectedRowStyle = ui.NewStyle(ui.ColorBlack, ui.ColorCyan)
 
-	sCPU := widgets.NewSparkline()
-	sCPU.Title = "cpu"
-	sCPU.LineColor = ui.ColorCyan
-	sNet := widgets.NewSparkline()
-	sNet.Title = "net"
-	sNet.LineColor = ui.ColorRed
-	sDisk := widgets.NewSparkline()
-	sDisk.Title = "disk"
-	sDisk.LineColor = ui.ColorYellow
+	expList := widgets.NewList()
+	expList.Title = " Experiment History (2) "
+	expList.BorderStyle.Fg = ui.ColorWhite
+	expList.SelectedRowStyle = ui.NewStyle(ui.ColorBlack, ui.ColorYellow)
 
-	sparks := widgets.NewSparklineGroup(sCPU, sNet, sDisk)
-	sparks.Title = "Recent Trends"
-	sparks.BorderStyle.Fg = ui.ColorWhite
-	sparks.TitleStyle.Fg = ui.ColorGreen
+	cpuPlot := widgets.NewPlot()
+	cpuPlot.Title = "CPU Impact (%)"
+	cpuPlot.Marker = widgets.MarkerBraille
+	cpuPlot.Data = [][]float64{{0, 0}}
+	cpuPlot.LineColors[0] = ui.ColorCyan
 
-	bar := widgets.NewBarChart()
-	bar.Title = "Current Metric Levels"
-	bar.BarWidth = 6
-	bar.BarGap = 2
-	bar.Labels = []string{"CPU", "IN", "OUT", "DSK"}
-	bar.BarColors = []ui.Color{ui.ColorGreen, ui.ColorCyan, ui.ColorBlue, ui.ColorYellow}
-	bar.BorderStyle.Fg = ui.ColorWhite
-	bar.TitleStyle.Fg = ui.ColorGreen
-	bar.NumFormatter = func(v float64) string {
-		if v > 0 && v < 10 {
-			return fmt.Sprintf("%.1f", v)
-		}
-		return fmt.Sprintf("%.0f", v)
-	}
-	bar.NumStyles = []ui.Style{ui.NewStyle(ui.ColorWhite, ui.ColorClear, ui.ModifierBold)}
 
-	stacked := widgets.NewStackedBarChart()
-	stacked.Title = "Selected vs Fleet Average"
-	stacked.BarWidth = 7
-	stacked.BarGap = 3
-	stacked.Labels = []string{"CPU", "NET", "DSK"}
-	stacked.BarColors = []ui.Color{ui.ColorCyan, ui.ColorMagenta}
-	stacked.BorderStyle.Fg = ui.ColorWhite
-	stacked.TitleStyle.Fg = ui.ColorGreen
-	stacked.NumFormatter = func(v float64) string {
-		if v > 0 && v < 10 {
-			return fmt.Sprintf("%.1f", v)
-		}
-		return fmt.Sprintf("%.0f", v)
-	}
-	stacked.NumStyles = []ui.Style{ui.NewStyle(ui.ColorWhite, ui.ColorClear, ui.ModifierBold)}
 
-	pie := widgets.NewPieChart()
-	pie.Title = "Current Resource Mix"
-	pie.BorderStyle.Fg = ui.ColorWhite
-	pie.TitleStyle.Fg = ui.ColorGreen
-	pie.Colors = []ui.Color{ui.ColorRed, ui.ColorCyan, ui.ColorBlue, ui.ColorYellow}
-	pie.LabelFormatter = func(dataIndex int, currentValue float64) string {
-		labels := []string{"CPU", "IN", "OUT", "DSK"}
-		if dataIndex >= 0 && dataIndex < len(labels) {
-			return labels[dataIndex]
-		}
-		return ""
-	}
 
-	netPlot := widgets.NewPlot()
-	netPlot.Title = "Network Receive Trend (KB/s)"
-	netPlot.Marker = widgets.MarkerBraille
-	netPlot.Data = make([][]float64, 1)
-	netPlot.LineColors[0] = ui.ColorYellow
-	netPlot.AxesColor = ui.ColorWhite
-	netPlot.BorderStyle.Fg = ui.ColorWhite
-	netPlot.TitleStyle.Fg = ui.ColorGreen
+	timerGauge := widgets.NewGauge()
+	timerGauge.Title = "Experiment Progress"
+	timerGauge.Percent = 0
+	timerGauge.BarColor = ui.ColorRed
+	timerGauge.LabelStyle = ui.NewStyle(ui.ColorWhite)
+	timerGauge.TitleStyle = ui.NewStyle(ui.ColorCyan)
 
-	fleetOverview := widgets.NewParagraph()
-	fleetOverview.Title = "Fleet Overview"
-	fleetOverview.WrapText = true
-	fleetOverview.BorderStyle.Fg = ui.ColorWhite
-	fleetOverview.TitleStyle.Fg = ui.ColorGreen
-	fleetOverview.TextStyle.Fg = ui.ColorWhite
 
-	trendInfo := widgets.NewParagraph()
-	trendInfo.Title = "Panel Legend"
-	trendInfo.WrapText = true
-	trendInfo.BorderStyle.Fg = ui.ColorWhite
-	trendInfo.TitleStyle.Fg = ui.ColorGreen
-	trendInfo.TextStyle.Fg = ui.ColorWhite
+	memPlot := widgets.NewPlot()
+	memPlot.Title = "Memory Impact (MB)"
+	memPlot.Marker = widgets.MarkerBraille
+	memPlot.Data = [][]float64{{0, 0}}
+	memPlot.LineColors[0] = ui.ColorMagenta
+
+	latPlot := widgets.NewPlot()
+	latPlot.Title = "Latency Impact (ms)"
+	latPlot.Marker = widgets.MarkerBraille
+	latPlot.Data = [][]float64{{0, 0}}
+	latPlot.LineColors[0] = ui.ColorGreen
+
+
+
+
+	vaptBar := widgets.NewBarChart()
+	vaptBar.Title = " VAPT Findings (FAILs) "
+	vaptBar.Data = []float64{0, 0, 0, 0, 0}
+	vaptBar.Labels = []string{"EC2", "S3", "IAM", "RDS", "LAM"}
+	vaptBar.BarWidth = 5
+	vaptBar.BarColors = []ui.Color{ui.ColorRed}
+	vaptBar.LabelStyles = []ui.Style{ui.NewStyle(ui.ColorCyan)}
+	vaptBar.NumStyles = []ui.Style{ui.NewStyle(ui.ColorWhite)}
+
+	vaptMetrics := widgets.NewParagraph()
+	vaptMetrics.Title = " VAPT Security Metrics "
+	vaptMetrics.BorderStyle.Fg = ui.ColorGreen
+
+	fleetPara := widgets.NewParagraph()
+	fleetPara.Title = " Fleet Metrics "
+	fleetPara.BorderStyle.Fg = ui.ColorWhite
+
+	taskDetail := widgets.NewParagraph()
+	taskDetail.Title = " Detailed Task Mapping "
+	taskDetail.BorderStyle.Fg = ui.ColorYellow
+	taskDetail.Text = "Loading task details..."
 
 	grid := ui.NewGrid()
-	setGrid := func() {
-		w, h := ui.TerminalDimensions()
-		grid.SetRect(0, 0, w, h)
-		grid.Set(
-			ui.NewRow(0.12, header),
-			ui.NewRow(0.24,
-				ui.NewCol(0.27, metrics),
-				ui.NewCol(0.46, feed),
-				ui.NewCol(0.27, bar),
-			),
-			ui.NewRow(0.12,
-				ui.NewCol(0.63, sparks),
-				ui.NewCol(0.37, stacked),
-			),
-			ui.NewRow(0.22,
-				ui.NewCol(0.38, pie),
-				ui.NewCol(0.40, netPlot),
-				ui.NewCol(0.22, fleetOverview),
-			),
-			ui.NewRow(0.08, trendInfo),
-			ui.NewRow(0.22, agentList),
-		)
-	}
-	setGrid()
+	termWidth, termHeight := ui.TerminalDimensions()
+	grid.SetRect(0, 0, termWidth, termHeight)
 
-	updateUI := func() {
-		// Merge agents from both sources: management gateway + InfluxDB autodiscovery.
-		// This ensures EC2 instances pushing metrics are always visible, even if
-		// they are not registered with the gateway (e.g. new instances).
-		seenIDs := make(map[string]bool)
-		var agentsList []api.Agent
+	grid.Set(
+		ui.NewRow(0.05, header),
+		ui.NewRow(0.95,
+			ui.NewCol(0.2,
+				ui.NewRow(0.3, agentList),
+				ui.NewRow(0.7, expList),
+			),
 
-		if gwAgents, err := api.GetAgents(); err == nil {
-			for _, a := range gwAgents {
-				if !seenIDs[a.ID] {
-					seenIDs[a.ID] = true
-					agentsList = append(agentsList, a)
+			ui.NewCol(0.8,
+				ui.NewRow(0.2,
+					ui.NewCol(0.4, metricsTable),
+					ui.NewCol(0.6, feed),
+				),
+				ui.NewRow(0.25,
+					ui.NewCol(0.85, cpuPlot),
+					ui.NewCol(0.15, timerGauge),
+				),
+
+
+				ui.NewRow(0.25,
+					ui.NewCol(0.5, memPlot),
+					ui.NewCol(0.5, latPlot),
+				),
+
+				ui.NewRow(0.3,
+					ui.NewCol(0.2, vaptMetrics),
+					ui.NewCol(0.3, fleetPara),
+					ui.NewCol(0.2, vaptBar),
+					ui.NewCol(0.3, taskDetail),
+				),
+
+			),
+		),
+	)
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+
+
+	uiEvents := ui.PollEvents()
+
+	var lastAgentCount int
+	var lastExpCount int
+	var lastVaptScore float64
+	var lastStats datamodel.FleetStats
+	var lastSelectedAgent int
+	var lastSelectedExp int
+	firstRun := true
+
+	var (
+		isExperimentRunning = false
+		lastExperimentState = ""
+		cloudWatchTicker    *time.Ticker
+		resultPollTicker    *time.Ticker
+	)
+
+	
+	cloudWatchTicker = time.NewTicker(30 * time.Second)
+	resultPollTicker = time.NewTicker(3 * time.Second) // Check experiment status frequently
+	
+	defer cloudWatchTicker.Stop()
+	defer resultPollTicker.Stop()
+
+	update := func(useCloudWatch bool) {
+		stats, err := datamodel.GetFleetStats()
+		if err != nil { 
+			stats = &datamodel.FleetStats{} 
+		}
+
+		activeCount, activeIDs := datamodel.GetActiveExperimentCount()
+		
+		results, _ := api.GetResults()
+		
+		// Convert raw results to ExperimentResult map
+		typedResults := make(map[string]datamodel.ExperimentResult)
+		for id, res := range results {
+			res.ExperimentID = id
+			typedResults[id] = res
+		}
+
+		
+		// Determine experiment state
+		hasRunningExperiments := false
+		hasPendingExperiments := false
+		
+		// Check actual experiment status from API
+		allExperiments, _ := api.GetExperiments()
+		if allExperiments != nil {
+			for _, exp := range allExperiments {
+				status := exp.Status
+				if status == "IN_PROGRESS" || status == "running" {
+					hasRunningExperiments = true
+				} else if status == "PENDING" || status == "pending" {
+					hasPendingExperiments = true
 				}
 			}
 		}
-		if disc, discErr := api.GetDiscoveredAgents(); discErr == nil {
-			for _, a := range disc {
-				if !seenIDs[a.ID] {
-					seenIDs[a.ID] = true
-					agentsList = append(agentsList, a)
-				}
+		
+		// Update state and manage tickers
+		newState := "IDLE"
+		if hasRunningExperiments {
+			newState = "RUNNING"
+		} else if hasPendingExperiments {
+			newState = "PENDING"
+		}
+		
+		// State change detection
+		if newState != lastExperimentState {
+			lastExperimentState = newState
+			
+			if newState == "RUNNING" {
+				cloudWatchTicker.Stop()
+				cloudWatchTicker = time.NewTicker(24 * time.Hour)
+				isExperimentRunning = true
+			} else {
+				// Resume CloudWatch
+				cloudWatchTicker.Stop()
+				cloudWatchTicker = time.NewTicker(30 * time.Second)
+				isExperimentRunning = false
 			}
 		}
-		agentsData = agentsList
-		if selectedAgent >= len(agentsData) {
-			selectedAgent = max(0, len(agentsData)-1)
+
+		if activeList == "agents" {
+
+			agentList.BorderStyle.Fg = ui.ColorYellow
+			expList.BorderStyle.Fg = ui.ColorWhite
+		} else {
+			agentList.BorderStyle.Fg = ui.ColorWhite
+			expList.BorderStyle.Fg = ui.ColorYellow
 		}
 
-		agentRows := make([]string, 0, len(agentsData))
-		for i, a := range agentsData {
-			agentRows = append(agentRows, fmt.Sprintf("[%d] %s  [%s]", i+1, a.ID, a.Host))
+		fleetPara.Text = fmt.Sprintf("\n  [Active Agents: ](fg:green) %d\n  [Running Tasks: ](fg:yellow) %d\n  [Avg Latency:   ](fg:cyan) %.1f ms\n  [Avg Memory:    ](fg:magenta) %.1f MB\n  [Avg CPU Spike: ](fg:cyan) %.1f%%",
+			stats.ActiveAgents, activeCount, stats.AverageLatency, stats.AverageMemory, stats.AverageCPU)
+
+
+		agents, err := api.GetDiscoveredAgents()
+
+		if err != nil {
+			agents = []datamodel.Agent{}
 		}
-		if len(agentRows) == 0 {
-			agentRows = []string{"Scanning for agents..."}
+
+		if len(agents) != lastAgentCount || lastAgentCount == 0 {
+			var agentNames []string
+			for _, a := range agents { 
+				// Only show active agents (heartbeats) or specifically named agents
+				if a.Status == "Active" || strings.Contains(strings.ToLower(a.ID), "agent") {
+					agentNames = append(agentNames, a.ID) 
+				}
+			}
+			agentList.Rows = agentNames
+			lastAgentCount = len(agents)
 		}
-		agentList.Rows = agentRows
+
+		if selectedAgent >= len(agentList.Rows) { selectedAgent = len(agentList.Rows) - 1 }
+		if selectedAgent < 0 { selectedAgent = 0 }
 		agentList.SelectedRow = selectedAgent
 
-		modeLabel := "LIVE"
-		windowLabel := "LAST 1M"
+		currentAgentID := ""
+		if len(agentList.Rows) > 0 { currentAgentID = agentList.Rows[selectedAgent] }
 
-		if len(agentsData) == 0 {
-			metrics.Rows = [][]string{
-				{"Metric", "Value"},
-				{"CPU", "N/A"},
-				{"NET", "N/A"},
-				{"STATUS", "NO AGENTS"},
-			}
-			feed.Text = strings.Join(feedLines, "\n")
-			sCPU.Data = []float64{0}
-			sNet.Data = []float64{0}
-			sDisk.Data = []float64{0}
-			sCPU.MaxVal = 100
-			sNet.MaxVal = 1
-			sDisk.MaxVal = 1
-			bar.Data = []float64{0, 0, 0, 0}
-			bar.MaxVal = 1
-			pie.Data = []float64{1}
-			stacked.Data = [][]float64{{0, 0}, {0, 0}, {0, 0}}
-			stacked.MaxVal = 1
-			netPlot.Data[0] = []float64{0, 0}
-			netPlot.MaxVal = 1
-			fleetOverview.Text = "Agents online: 0\nAvg CPU: N/A\nAvg Net: N/A\nAvg Disk: N/A"
-			trendInfo.Text = "Current Metric Levels = selected instance right now | Recent Trends = selected instance over current window | Pie = selected instance resource mix | Network Plot = selected instance inbound traffic trend | Selected vs Fleet = selected instance against fleet average."
-			header.Text = "[ q ] quit  [ up/down ] agents  [ l ] live  [ n ] normal  [ w ] overall/10m"
-			ui.Render(grid)
-			return
-		}
+		vaptFindings := datamodel.GetVAPTFindings()
+		var failedRows []string
+		var passedRows []string
+		var failedMap = make(map[string]bool)
 
-		targetAgent := agentsData[selectedAgent].ID
-		latest, _ := api.GetComputeMetrics(targetAgent)
-		history, _ := api.GetComputeHistory(targetAgent, 1*time.Minute)
-
-		fleet, _ := api.GetFleetAggregate()
-		fleetOnline := 0
-		fleetAvgCPU := 0.0
-		fleetAvgNet := 0.0
-		fleetAvgDisk := 0.0
-
-		if fleet != nil {
-			fleetOnline = fleet.ActiveAgents // Simplified for now
-			fleetAvgCPU = fleet.AverageCPU
-			fleetAvgNet = fleet.AverageNet
-			fleetAvgDisk = fleet.AverageDisk
-		}
-
-		if viewMode == "normal" {
-			modeLabel = "NORMAL"
-			if aggregateWindow == "10m" {
-				windowLabel = "LAST 10M"
+		for _, f := range vaptFindings {
+			row := "audit_" + f.RuleID
+			if strings.ToUpper(f.Status) == "FAIL" {
+				failedRows = append(failedRows, row)
+				failedMap[row] = true
 			} else {
-				windowLabel = "OVERALL"
+				passedRows = append(passedRows, row)
 			}
-			history, _ = api.GetComputeHistoryForScope(targetAgent, aggregateWindow)
-			agg, _ := api.GetComputeAggregate(targetAgent, aggregateWindow)
-			if agg != nil {
-				latest = &api.ComputeSummary{
-					InstanceID: targetAgent,
-					ComputeMetric: api.ComputeMetric{
-						CPUUtilization:  agg.Average.CPUUtilization,
-						NetworkInBytes:  agg.Average.NetworkInBytes,
-						NetworkOutBytes: agg.Average.NetworkOutBytes,
-						DiskReadBytes:   agg.Average.DiskReadBytes,
-						DiskWriteBytes:  agg.Average.DiskWriteBytes,
-						StatusFailed:    agg.Average.StatusFailed,
-					},
+		}
+
+		var treeRows []string
+		var displayRows []string
+
+		if len(failedRows) > 0 {
+			treeRows = append(treeRows, "HEADER_FAILED")
+			displayRows = append(displayRows, "[▼ FAILED AUDITS](fg:red,mod:bold)")
+			for _, r := range failedRows {
+				treeRows = append(treeRows, r)
+				displayRows = append(displayRows, "  "+r)
+			}
+		}
+		
+		activeChaosCount := 0
+		for _, id := range datamodel.GetExperimentIDsByAgent(currentAgentID) {
+			if !strings.HasPrefix(id, "audit_") {
+				if activeChaosCount == 0 {
+					treeRows = append(treeRows, "HEADER_CHAOS")
+					displayRows = append(displayRows, "[▼ ACTIVE CHAOS](fg:cyan,mod:bold)")
+				}
+				treeRows = append(treeRows, id)
+				displayRows = append(displayRows, "  "+id)
+				activeChaosCount++
+			}
+		}
+
+		if len(passedRows) > 0 {
+			treeRows = append(treeRows, "HEADER_PASSED")
+			displayRows = append(displayRows, "[▼ PASSED AUDITS](fg:green,mod:bold)")
+			for _, r := range passedRows {
+				treeRows = append(treeRows, r)
+				displayRows = append(displayRows, "  "+r)
+			}
+		}
+
+		expList.Rows = displayRows
+		lastExpCount = len(displayRows)
+		
+		if selectedExp >= len(expList.Rows) { selectedExp = len(expList.Rows) - 1 }
+		if selectedExp < 0 { selectedExp = 0 }
+		expList.SelectedRow = selectedExp
+
+		if len(treeRows) > 0 && selectedExp < len(treeRows) {
+			currentExpID := treeRows[selectedExp]
+			
+			if strings.HasPrefix(currentExpID, "HEADER_") {
+				taskDetail.Text = "\n\n  [Select a task to view forensics...](fg:gray)"
+			} else {
+				res, hasRes := typedResults[currentExpID]
+				desc := datamodel.GetMappedDescription(currentExpID)
+
+				if hasRes {
+					recovery := "[PENDING](fg:yellow)"
+					if res.Restored { recovery = "[SUCCESS](fg:green)" }
+					
+					impact := res.Impact
+					if impact == "" { 
+						impact = fmt.Sprintf("[CPU:](fg:cyan)%d%% [MEM:](fg:yellow)%dMB [LAT:](fg:magenta)%dms", 
+							res.CPUPercent, res.MemoryMB, res.LatencyMS)
+					}
+
+					latestObs := "No observations yet."
+					if len(res.Observations) > 0 {
+						latestObs = res.Observations[len(res.Observations)-1].Message
+					}
+					
+					diffInfo := ""
+					if len(res.SnapshotDiff) > 0 {
+						var b strings.Builder
+						for k, v := range res.SnapshotDiff {
+							fmt.Fprintf(&b, " %s:%v", k, v)
+							if b.Len() > 120 { b.WriteString("..."); break }
+						}
+						diffInfo = "\n[MUTATIONS:](fg:magenta)" + b.String()
+					}
+
+					dispID := currentExpID
+					if strings.HasPrefix(dispID, "audit_") {dispID = strings.TrimPrefix(dispID, "audit_") }
+					if len(dispID) > 12 { dispID = dispID[:12] }
+
+					if strings.HasPrefix(currentExpID, "audit_") && strings.ToUpper(res.Status) == "PASS" {
+						if idx := strings.Index(desc, "[REMEDIATION:]"); idx != -1 {
+							desc = desc[:idx]
+						}
+					}
+
+					taskDetail.Text = fmt.Sprintf("[ID:  ](fg:cyan)%s  [STATUS:](fg:white)%s\n[DESC:](fg:yellow) %s\n[IMPACT:](fg:white) %s\n[RESTORE:](fg:white)%s  [LOG:](fg:cyan) %s%s", 
+						dispID, res.Status, desc, impact, recovery, latestObs, diffInfo)
+
+				} else {
+					taskDetail.Text = fmt.Sprintf("[ID:  ](fg:cyan)%s\n[DESC:](fg:yellow) %s\n[INFO:](fg:white) Waiting for result telemetry...", 
+						currentExpID, desc)
 				}
 			}
 		}
 
-		var cpuSeries []float64
-		var netSeries []float64
-		var diskSeries []float64
-		var netInSeries []float64
-		for _, point := range history {
-			cpuSeries = append(cpuSeries, point.ComputeMetric.CPUUtilization)
-			netSeries = append(netSeries, (point.ComputeMetric.NetworkInBytes+point.ComputeMetric.NetworkOutBytes)/1024)
-			netInSeries = append(netInSeries, point.ComputeMetric.NetworkInBytes/1024)
-			diskSeries = append(diskSeries, (point.ComputeMetric.DiskReadBytes+point.ComputeMetric.DiskWriteBytes)/1024)
-		}
-
-		if latest == nil {
-			latest = &api.ComputeSummary{InstanceID: targetAgent}
-		}
-
-		cpuTrend, cpuTrendMax := sparklineSeries(cpuSeries)
-		netTrend, netTrendMax := sparklineSeries(netSeries)
-		diskTrend, diskTrendMax := sparklineSeries(diskSeries)
-		netInSeries = densifySeries(netInSeries, 48)
-		cpuSeries = densifySeries(cpuSeries, 48)
-		netSeries = densifySeries(netSeries, 48)
-		diskSeries = densifySeries(diskSeries, 48)
-
-		status := "ONLINE"
-		if latest.ComputeMetric.StatusFailed {
-			status = "DEGRADED"
-		}
-
-		metrics.Title = fmt.Sprintf("System Health (%s)", modeLabel)
-		metrics.Rows = [][]string{
-			{"Metric", "Value"},
-			{"CPU USAGE", fmt.Sprintf("%.1f%%", latest.ComputeMetric.CPUUtilization)},
-			{"NET RECV", fmt.Sprintf("%.2f KB/s", latest.ComputeMetric.NetworkInBytes/1024)},
-			{"NET SEND", fmt.Sprintf("%.2f KB/s", latest.ComputeMetric.NetworkOutBytes/1024)},
-			{"DISK I/O", fmt.Sprintf("%.2f KB/s", (latest.ComputeMetric.DiskReadBytes+latest.ComputeMetric.DiskWriteBytes)/1024)},
-			{"WINDOW", windowLabel},
-			{"STATUS", status},
-		}
-		metrics.ColumnWidths = []int{12, 18}
-
-		ts := time.Now().Format("15:04:05")
-		pushFeed(fmt.Sprintf("%s Metric Packet | CPU: %.1f%% | Net: %.1fKb | %s", ts, latest.ComputeMetric.CPUUtilization, (latest.ComputeMetric.NetworkInBytes+latest.ComputeMetric.NetworkOutBytes)/1024, status))
-		feed.Text = strings.Join(feedLines, "\n")
-
-		sparks.Title = fmt.Sprintf("Recent Trends (%s)", windowLabel)
-		sCPU.Title = "cpu %"
-		sNet.Title = "net kb/s"
-		sDisk.Title = "disk kb/s"
-		sCPU.Data = cpuTrend
-		sNet.Data = netTrend
-		sDisk.Data = diskTrend
-		sCPU.MaxVal = cpuTrendMax
-		sNet.MaxVal = netTrendMax
-		sDisk.MaxVal = diskTrendMax
-
-		currentLevels := []float64{
-			latest.ComputeMetric.CPUUtilization,
-			latest.ComputeMetric.NetworkInBytes / 1024,
-			latest.ComputeMetric.NetworkOutBytes / 1024,
-			(latest.ComputeMetric.DiskReadBytes + latest.ComputeMetric.DiskWriteBytes) / 1024,
-		}
-		bar.Data = currentLevels
-		bar.MaxVal = maxOrDefault(bar.Data, 1)
-		pie.Data = safePieData(currentLevels)
-
-		if fleet != nil {
-			stacked.Data = [][]float64{
-				{latest.ComputeMetric.CPUUtilization, fleetAvgCPU},
-				{(latest.ComputeMetric.NetworkInBytes + latest.ComputeMetric.NetworkOutBytes) / 1024, fleetAvgNet},
-				{(latest.ComputeMetric.DiskReadBytes + latest.ComputeMetric.DiskWriteBytes) / 1024, fleetAvgDisk},
+		if stats.VaptScore != lastVaptScore || firstRun {
+			findings := datamodel.GetVAPTFindings()
+			total := len(findings)
+			passed := 0
+			failed := 0
+			critical := 0
+			high := 0
+			
+			counts := map[string]float64{"EC2": 0, "S3": 0, "IAM": 0, "RDS": 0, "LAM": 0}
+			for _, f := range findings {
+				if strings.ToUpper(f.Status) == "PASS" {
+					passed++
+				} else {
+					failed++
+					if strings.ToUpper(f.Severity) == "CRITICAL" { critical++ }
+					if strings.ToUpper(f.Severity) == "HIGH" { high++ }
+					
+					parts := strings.Split(f.RuleID, "-")
+					if len(parts) > 1 {
+						if _, ok := counts[parts[1]]; ok { counts[parts[1]]++ }
+					}
+				}
 			}
-			stacked.MaxVal = maxOrDefault([]float64{
-				stacked.Data[0][0] + stacked.Data[0][1],
-				stacked.Data[1][0] + stacked.Data[1][1],
-				stacked.Data[2][0] + stacked.Data[2][1],
-			}, 1)
+
+			vaptMetrics.Text = fmt.Sprintf("\n [Total Rules: ](fg:cyan) %d\n [Passed:      ](fg:green) %d\n [Failed:      ](fg:red) %d\n [Critical:    ](fg:red,mod:bold) %d\n [High Risks:  ](fg:yellow) %d",
+				total, passed, failed, critical, high)
+			
+			if stats.VaptScore < 40 { vaptMetrics.BorderStyle.Fg = ui.ColorRed } else if stats.VaptScore < 75 { vaptMetrics.BorderStyle.Fg = ui.ColorYellow } else { vaptMetrics.BorderStyle.Fg = ui.ColorGreen }
+			
+			vaptBar.Data = []float64{counts["EC2"], counts["S3"], counts["IAM"], counts["RDS"], counts["LAM"]}
+			lastVaptScore = stats.VaptScore
+		
+			currentAgentID := ""
+			if len(agentList.Rows) > 0 && selectedAgent < len(agentList.Rows) {
+				currentAgentID = strings.Trim(agentList.Rows[selectedAgent], "\"")
+			}
+			if currentAgentID != GlobalMonitorState.LastSelectedAgentID {
+				GlobalMonitorState.CPUHistory = make([]float64, 50)
+				GlobalMonitorState.MemHistory = make([]float64, 50)
+				GlobalMonitorState.LatHistory = make([]float64, 50)
+
+				GlobalMonitorState.LastSelectedAgentID = currentAgentID
+				GlobalMonitorState.LastExpSeen = make(map[string]bool)
+				
+				for id, res := range typedResults {
+					if res.TargetID == currentAgentID || strings.Contains(strings.ToLower(id), strings.ToLower(currentAgentID)) {
+						if res.Status == "completed" || res.Status == "COMPLETED" {
+
+							for i := 0; i < 3; i++ { 
+								GlobalMonitorState.CPUHistory = append(GlobalMonitorState.CPUHistory[1:], float64(res.CPUPercent))
+								GlobalMonitorState.MemHistory = append(GlobalMonitorState.MemHistory[1:], float64(res.MemoryMB))
+								GlobalMonitorState.LatHistory = append(GlobalMonitorState.LatHistory[1:], float64(res.LatencyMS))
+							}
+
+							GlobalMonitorState.CPUHistory = append(GlobalMonitorState.CPUHistory[1:], 0)
+							GlobalMonitorState.MemHistory = append(GlobalMonitorState.MemHistory[1:], 0)
+							GlobalMonitorState.LatHistory = append(GlobalMonitorState.LatHistory[1:], 0)
+
+							GlobalMonitorState.LastExpSeen[id] = true
+						}
+					}
+				}	
+			}
+		}
+		// 2. LIVE SCROLLING (Always run every tick)
+		// Add a tiny sine wave for "wavy" look
+		osc := 0.2 * math.Sin(float64(time.Now().Unix())/2.0)
+		GlobalMonitorState.CPUHistory = append(GlobalMonitorState.CPUHistory[1:], 0.5 + osc)
+		GlobalMonitorState.MemHistory = append(GlobalMonitorState.MemHistory[1:], 10.0 + (osc*5))
+		GlobalMonitorState.LatHistory = append(GlobalMonitorState.LatHistory[1:], 1.0 + osc)
+
+		// 3. NEW SPIKE INJECTION
+
+		for id, res := range typedResults {
+			if !GlobalMonitorState.LastExpSeen[id] && (res.Status == "completed" || res.Status == "COMPLETED") {
+				if strings.ToLower(res.TargetID) == strings.ToLower(currentAgentID) || strings.Contains(strings.ToLower(id), strings.ToLower(currentAgentID)) {
+					// Spike found for current agent!
+					for i := 0; i < 5; i++ {
+						if res.CPUPercent > 0 { GlobalMonitorState.CPUHistory = append(GlobalMonitorState.CPUHistory[1:], float64(res.CPUPercent)) }
+						if res.MemoryMB > 0 { GlobalMonitorState.MemHistory = append(GlobalMonitorState.MemHistory[1:], float64(res.MemoryMB)) }
+						if res.LatencyMS > 0 { GlobalMonitorState.LatHistory = append(GlobalMonitorState.LatHistory[1:], float64(res.LatencyMS)) }
+					}
+					GlobalMonitorState.LastExpSeen[id] = true
+				}
+			}
 		}
 
-		netPlot.Data[0] = safeSeries(netInSeries)
-		netPlot.MaxVal = maxOrDefault(netPlot.Data[0], 1)
-		netPlot.HorizontalScale = 1
-		fleetOverview.Text = fmt.Sprintf(
-			"Agents seen: %d\nHealthy now: %d\nAvg CPU: %.1f%%\nAvg Net: %.1f KB/s\nAvg Disk: %.1f KB/s",
-			len(agentsData), fleetOnline, fleetAvgCPU, fleetAvgNet, fleetAvgDisk,
-		)
-		trendInfo.Text = fmt.Sprintf(
-			"Selected now: CPU %.1f%% | Net In %.1f KB/s | Net Out %.1f KB/s | Disk %.1f KB/s. %s. Stacked bars compare selected instance against fleet average for CPU, total network, and disk I/O.",
-			currentLevels[0], currentLevels[1], currentLevels[2], currentLevels[3], windowLabel,
-		)
+		// 4. Timer Gauge Logic
+		activeProgress := 0
+		for _, res := range typedResults {
+			if strings.ToLower(res.Status) == "running" || strings.ToLower(res.Status) == "in_progress" {
 
-		header.Text = fmt.Sprintf("[ q ] quit  [ up/down ] agents  [ l ] live  [ n ] normal  [ w ] overall/10m    agent: %s    mode: %s %s",
-			targetAgent, modeLabel, windowLabel)
+				startStr := strings.Split(res.CreatedAt, " m=")[0]
+				start, err := time.Parse("2006-01-02 15:04:05.999999 -0700 MST", startStr)
+				if err == nil {
+					elapsed := time.Since(start).Seconds()
+					if res.Duration > 0 {
+						activeProgress = int((elapsed / float64(res.Duration)) * 100)
+						if activeProgress > 100 { activeProgress = 100 }
+						timerGauge.Title = fmt.Sprintf(" Experiment: %s (%ds remaining) ", res.ExperimentType, res.Duration-int(elapsed))
+					}
+				}
+				break 
+			}
+		}
+		if activeProgress == 0 {
+			timerGauge.Title = " No Active Experiment "
+		}
+		timerGauge.Percent = activeProgress
 
-		ui.Render(grid)
+		cpuPlot.Data = [][]float64{ensureHistory(GlobalMonitorState.CPUHistory)}
+		memPlot.Data = [][]float64{ensureHistory(GlobalMonitorState.MemHistory)}
+		latPlot.Data = [][]float64{ensureHistory(GlobalMonitorState.LatHistory)}
+
+
+		var activeLines []string
+		for _, id := range activeIDs {
+			if strings.HasPrefix(id, "audit_") { continue }
+			shortID := id
+			if len(shortID) > 8 { shortID = shortID[:8] }
+			activeLines = append(activeLines, fmt.Sprintf("[LIVE:  ](fg:yellow,mod:bold) [IN_PROGRESS](fg:white) %s", shortID))
+		}
+
+		var resultIDs []string
+		for id := range typedResults {
+			if !strings.HasPrefix(id, "audit_") { resultIDs = append(resultIDs, id) }
+		}
+		sort.Strings(resultIDs)
+
+		var resultLines []string
+		for _, id := range resultIDs {
+			res := typedResults[id]
+			shortID := id
+			if len(shortID) > 8 { shortID = shortID[:8] }
+			color := "green"
+			if res.Status == "FAIL" { color = "red" }
+			resultLines = append(resultLines, fmt.Sprintf("[%s:](fg:%s) [COMPLETED](fg:white) %s", shortID, color, res.Status))
+		}
+		
+		allLines := append(activeLines, resultLines...)
+		if len(allLines) > 10 { allLines = allLines[:10] }
+		feed.Text = strings.Join(allLines, "\n")
+
+
+
+		var toRender []ui.Drawable
+
+		if stats.AverageCPU != lastStats.AverageCPU || firstRun {
+			metricsTable.Rows = [][]string{
+				{"Metric", "Value", "Status"},
+				{"Fleet CPU", fmt.Sprintf("%.1f%%", stats.AverageCPU), "OK"},
+				{"Fleet Mem", fmt.Sprintf("%.1f MB", stats.AverageMemory), "OK"},
+				{"VAPT PASS", fmt.Sprintf("%.0f%%", stats.VaptScore), "HEALTHY"},
+			}
+			toRender = append(toRender, metricsTable)
+
+			fleetPara.Text = fmt.Sprintf("\n  [Active Agents: ](fg:green) %d\n  [Running Tasks: ](fg:yellow) %d\n  [Avg Latency:   ](fg:cyan) %.1f ms\n  [Avg Memory:    ](fg:magenta) %.1f MB\n  [Avg CPU Spike: ](fg:cyan) %.1f%%",
+				stats.ActiveAgents, activeCount, stats.AverageLatency, stats.AverageMemory, stats.AverageCPU)
+			toRender = append(toRender, fleetPara)
+		}
+
+
+		if len(agents) != lastAgentCount || selectedAgent != lastSelectedAgent || firstRun {
+			toRender = append(toRender, agentList)
+			lastSelectedAgent = selectedAgent
+		}
+		if lastExpCount != len(displayRows) || selectedExp != lastSelectedExp || firstRun {
+			toRender = append(toRender, expList)
+			lastSelectedExp = selectedExp
+		}
+
+		toRender = append(toRender, feed)
+
+
+		metrics := []ui.Drawable{cpuPlot, memPlot, latPlot, timerGauge}
+		if metrics != nil || firstRun {
+			toRender = append(toRender, cpuPlot, memPlot, latPlot, timerGauge)
+		}
+
+
+		if stats.VaptScore != lastVaptScore || firstRun {
+			toRender = append(toRender, vaptBar, vaptMetrics)
+		}
+		
+		toRender = append(toRender, taskDetail)
+
+		if firstRun {
+			ui.Render(grid)
+			firstRun = false
+		} else if len(toRender) > 0 {
+			ui.Render(toRender...)
+		}
+		
+		lastStats = *stats
 	}
 
-	updateUI()
-
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	uiEvents := ui.PollEvents()
+	update(true)
 
 	for {
 		select {
-		case <-ticker.C:
-			updateUI()
 		case e := <-uiEvents:
 			switch e.ID {
-			case "q", "<C-c>", "<Escape>":
-				return nil
-			case "<Resize>":
-				setGrid()
-				ui.Clear()
-				updateUI()
+			case "q", "<C-c>":
+				GlobalMonitorState.SelectedIdx = selectedAgent
+				GlobalMonitorState.ExpIdx = selectedExp
+				return "Main"
+			case "1":
+				activeList = "agents"
+				update(false)
+			case "2":
+				activeList = "exps"
+				update(false)
 			case "<Down>":
-				if selectedAgent < len(agentsData)-1 {
-					selectedAgent++
-					updateUI()
+				if activeList == "agents" && len(agentList.Rows) > 0 {
+					if selectedAgent < len(agentList.Rows)-1 { selectedAgent++ }
+				} else if activeList == "exps" && len(expList.Rows) > 0 {
+					if selectedExp < len(expList.Rows)-1 { selectedExp++ }
 				}
+				update(false)
 			case "<Up>":
-				if selectedAgent > 0 {
-					selectedAgent--
-					updateUI()
+				if activeList == "agents" {
+					if selectedAgent > 0 { selectedAgent-- }
+				} else {
+					if selectedExp > 0 { selectedExp-- }
 				}
-			case "l":
-				viewMode = "live"
-				updateUI()
-			case "n":
-				viewMode = "normal"
-				aggregateWindow = "overall"
-				updateUI()
-			case "w":
-				if viewMode == "normal" {
-					if aggregateWindow == "overall" {
-						aggregateWindow = "10m"
-					} else {
-						aggregateWindow = "overall"
-					}
-					updateUI()
-				}
+				update(false)
+			case "s":
+				go func() { api.SyncAgents() }()
+				update(false)
+			case "<Resize>":
+				payload := e.Payload.(ui.Resize)
+				grid.SetRect(0, 0, payload.Width, payload.Height)
+				ui.Clear()
+				ui.Render(grid)
 			}
+			
+		case <-cloudWatchTicker.C:
+			if !isExperimentRunning {
+				update(true) 
+			}
+			
+		case <-resultPollTicker.C:
+			update(false) 
 		}
 	}
-}
-
-func clampPercent(v float64) int {
-	if v < 0 {
-		return 0
-	}
-	if v > 100 {
-		return 100
-	}
-	return int(v + 0.5)
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

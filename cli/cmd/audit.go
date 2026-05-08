@@ -4,10 +4,27 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 )
+
+func resolveAuditDir() (string, error) {
+	locations := []string{
+		"security-audit",
+		"../security-audit",
+		"../../security-audit",
+	}
+
+	for _, loc := range locations {
+		if _, err := os.Stat(loc); err == nil {
+			abspath, _ := filepath.Abs(loc)
+			return abspath, nil
+		}
+	}
+	return "", fmt.Errorf("security-audit directory not found — ensure it's cloned at the same level as lucifer-cli")
+}
 
 var auditCmd = &cobra.Command{
 	Use:   "audit",
@@ -33,16 +50,29 @@ var scanCmd = &cobra.Command{
 			service = "all"
 		}
 
+		auditDir, _ := resolveAuditDir()
 		fmt.Printf("Starting security audit scan for %s on %s...\n", service, provider)
 
-		// Executing standalone security-audit
-		command := exec.Command("go", "run", "main.go", provider, service)
-		command.Dir = "../../security-audit"
-		command.Stdout = cmd.OutOrStdout()
-		command.Stderr = cmd.ErrOrStderr()
+		argsList := []string{"run", "main.go", provider}
+		if service != "all" {
+			argsList = append(argsList, service)
+		}
+		command := exec.Command("go", argsList...)
+		command.Dir = auditDir
+		command.Stdout = os.Stdout
+		command.Stderr = os.Stderr
+
+		command.Env = append(os.Environ(),
+			"AWS_ROLE_ARN="+getEnvOrDefault("AWS_ROLE_ARN", ""),
+			"AWS_EXTERNAL_ID="+getEnvOrDefault("AWS_EXTERNAL_ID", ""),
+		)
 
 		if err := command.Run(); err != nil {
-			fmt.Println("Error running scan:", err)
+			fmt.Printf("Error running scan: %v\n", err)
+			fmt.Println("\nTroubleshooting:")
+			fmt.Println("1. Ensure AWS credentials are configured (aws-connect or env vars)")
+			fmt.Println("2. Check that the IAM role has audit permissions")
+			fmt.Println("3. Run 'cd security-audit && go run main.go' directly to see full error")
 		}
 	},
 }
@@ -60,8 +90,15 @@ var rulesCmd = &cobra.Command{
 		if len(args) > 1 {
 			service = args[1]
 		}
+
+		auditDir, err := resolveAuditDir()
+		if err != nil {
+			fmt.Println("Error:", err)
+			return
+		}
+
 		fmt.Printf("Displaying rules for %s on %s...\n", service, provider)
-		rulesPath := fmt.Sprintf("../../security-audit/rules/%s", provider)
+		rulesPath := filepath.Join(auditDir, "rules", provider)
 		fmt.Printf("Rules are loaded dynamically from %s/\n", rulesPath)
 
 		entries, err := os.ReadDir(rulesPath)
@@ -78,7 +115,7 @@ var rulesCmd = &cobra.Command{
 			if strings.HasSuffix(entry.Name(), ".yaml") {
 				found = true
 				fmt.Printf("\n=== %s ===\n", strings.ToUpper(strings.TrimSuffix(entry.Name(), ".yaml")))
-				content, err := os.ReadFile(fmt.Sprintf("%s/%s", rulesPath, entry.Name()))
+				content, err := os.ReadFile(filepath.Join(rulesPath, entry.Name()))
 				if err == nil {
 					lines := strings.Split(string(content), "\n")
 					var id, name string
@@ -103,6 +140,13 @@ var rulesCmd = &cobra.Command{
 			fmt.Println("No rules found for the specified service & provider.")
 		}
 	},
+}
+
+func getEnvOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 // var reportCmd = &cobra.Command{
@@ -133,7 +177,6 @@ func init() {
 	auditCmd.AddCommand(scanCmd)
 	auditCmd.AddCommand(rulesCmd)
 	// auditCmd.AddCommand(reportCmd)
-	// auditCmd.AddCommand(remediateCmd)
 
 	rootCmd.AddCommand(auditCmd)
 }

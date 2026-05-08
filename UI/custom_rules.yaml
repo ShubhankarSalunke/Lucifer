@@ -1,0 +1,29 @@
+rules:
+    - id: ""
+      name: ""
+      severity: MEDIUM
+      description: well IDK
+      type: smth
+      check:
+        operator: ""
+        value: 2
+      remediation: idk
+      benchmarks:
+        cis_control: null
+        nist_csf: ""
+        mitre_technique: ""
+      chaos_trigger: null
+    - id: "3"
+      name: smth smth
+      severity: MEDIUM
+      description: well IDK
+      type: smth
+      check:
+        operator: ""
+        value: rwfes
+      remediation: idk
+      benchmarks:
+        cis_control: null
+        nist_csf: ""
+        mitre_technique: ""
+      chaos_trigger: null
