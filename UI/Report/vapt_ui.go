@@ -1,471 +1,366 @@
-package report
+package main
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"regexp"
-	"sort"
-	"strconv"
 	"strings"
-	"github.com/adigajjar/security-audit/rules"
-	glamour "github.com/charmbracelet/glamour"
+	"time"
+
+	report "cli/Report"
+	"cli/api"
+	"cli/tui"
+
+	"lucifer-cli/config"
+
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-	"gopkg.in/yaml.v3"
 )
 
-type Vulnerability struct {
-	Title         string
-	Severity      string
-	Status        string
-	SeverityValue int
-	Content       string
-}
+var (
+	history      []string
+	historyIndex int
+)
 
-func getSeverityBg(sev string) string {
-	switch sev {
-	case "CRITICAL":
-		return "#ff4d4d"
-	case "HIGH":
-		return "#ffb84d"
-	case "MEDIUM":
-		return "#4da6ff"
-	case "LOW":
-		return "#33cc99"
-	default:
-		return "#444444"
+func initToken() {
+	tok := config.GetToken()
+	if tok != "" {
+		api.SetAuthToken(tok)
 	}
 }
 
-func getSeverityColor(sev string) string {
-	switch sev {
-	case "CRITICAL":
-		return "red"
-	case "HIGH":
-		return "yellow"
-	case "MEDIUM":
-		return "blue"
-	case "LOW":
-		return "green"
-	default:
-		return "white"
-	}
-}
+func main() {
+	initToken()
 
-var found bool = true
+	if len(os.Args) > 1 && (os.Args[1] == "--help" || os.Args[1] == "-h") {
+		fmt.Println(`
+		CHAOS CONTROL TERMINAL - Help
 
-func resolvePath(path string) string {
-	if _, err := os.Stat(path); err == nil { return path }
-	if _, err := os.Stat("../" + path); err == nil { return "../" + path }
-	if _, err := os.Stat("../../" + path); err == nil { return "../../" + path }
-	return path
-}
+		Usage:
+		go run cmd/main.go [--help]
+		make ui-help
 
-func GetReport() []byte {
-	path := resolvePath("security-audit/vapt_report_aws.md")
-	if data, err := os.ReadFile(path); err == nil {
-		found = true
-		return data
-	}
-	found = false
-	return nil
-}
-
-func saveRule(rule rules.Rule) error {
-	path := "custom_rules.yaml"
-
-	var custom rules.Rules
-	data, _ := os.ReadFile(path)
-	_ = yaml.Unmarshal(data, &custom)
-
-	existingPath := resolvePath("security-audit/rules/rules.yaml")
-	var existing rules.Rules
-	data2, _ := os.ReadFile(existingPath)
-	_ = yaml.Unmarshal(data2, &existing)
-
-	for _, r := range existing.Rules {
-		if r.ID == rule.ID {
-			return fmt.Errorf("rule already exists")
-		}
-	}
-	for _, r := range custom.Rules {
-		if r.ID == rule.ID {
-			return fmt.Errorf("custom rule already exists")
-		}
+		Navigation:
+		Press Esc        Return to tab navigation bar
+		Press Tab        Cycle through dashboard tabs
+		Press q          Exit
+		`)
+		os.Exit(0)
 	}
 
-	custom.Rules = append(custom.Rules, rule)
-	out, _ := yaml.Marshal(custom)
-	return os.WriteFile(path, out, 0644)
-}
-
-func parseValue(v string) interface{} {
-	if i, err := strconv.Atoi(v); err == nil {
-		return i
-	}
-	if b, err := strconv.ParseBool(v); err == nil {
-		return b
-	}
-	if f, err := strconv.ParseFloat(v, 64); err == nil {
-		return f
-	}
-	return v
-}
-
-func parseMarkdown() []Vulnerability {
-	content := string(GetReport())
-	if idx := strings.Index(content, "## Detailed Findings"); idx != -1 {
-		content = content[idx:]
-	}
-	blocks := strings.Split(content, "---")
-
-	var vulns []Vulnerability
-
-	titleRegex := regexp.MustCompile(`### \d+\. (.*?)\n`)
-	severityRegex := regexp.MustCompile(`- \*\*Severity:\*\* (.*?)\n`)
-	statusRegex := regexp.MustCompile(`- \*\*Status:\*\* (.*?)\n`)
-
-	for _, block := range blocks {
-		if !strings.Contains(block, "### ") {
-			continue
-		}
-
-		v := Vulnerability{
-			Content: strings.TrimSpace(block),
-		}
-
-		if m := titleRegex.FindStringSubmatch(block); len(m) > 1 {
-			v.Title = m[1]
-		}
-		if m := severityRegex.FindStringSubmatch(block); len(m) > 1 {
-			v.Severity = strings.TrimSpace(m[1])
-		}
-		if m := statusRegex.FindStringSubmatch(block); len(m) > 1 {
-			v.Status = strings.TrimSpace(m[1])
-		}
-
-		switch v.Severity {
-		case "CRITICAL":
-			v.SeverityValue = 4
-		case "HIGH":
-			v.SeverityValue = 3
-		case "MEDIUM":
-			v.SeverityValue = 2
-		case "LOW":
-			v.SeverityValue = 1
-		default:
-			v.SeverityValue = 0
-		}
-
-		if v.Title != "" {
-			vulns = append(vulns, v)
-		}
-	}
-
-	sort.Slice(vulns, func(i, j int) bool {
-		return vulns[i].SeverityValue > vulns[j].SeverityValue
-	})
-
-	return vulns
-}
-
-func extractField(content, field string) string {
-	re := regexp.MustCompile(fmt.Sprintf(`(?i)%s:\s*(.*)`, field))
-	match := re.FindStringSubmatch(content)
-	if len(match) > 1 {
-		val := strings.TrimSpace(match[1])
-		val = strings.ReplaceAll(val, "**", "")
-		val = strings.ReplaceAll(val, "__", "")
-		val = strings.ReplaceAll(val, "`", "")
-		return val
-	}
-	return "N/A"
-}
-
-func trimRendered(s string) string {
-	lines := strings.Split(s, "\n")
-	max := 20
-	if len(lines) > max {
-		lines = lines[:max]
-		lines = append(lines, "... (truncated)")
-	}
-	for i := range lines {
-		lines[i] = strings.TrimSpace(lines[i])
-	}
-	return strings.Join(lines, "\n")
-}
-
-func isTyping(p tview.Primitive) bool {
-	switch v := p.(type) {
-	case *tview.InputField:
-		return v.HasFocus()
-	case *tview.Form:
-		return true
-	default:
-		return false
-	}
-}
-
-func GetVaptReportView() tview.Primitive {
-	reportData := GetReport()
-	if reportData == nil || !found {
-		return tview.NewTextView().
-			SetDynamicColors(true).
-			SetTextAlign(tview.AlignCenter).
-			SetText("\n\n[gray]VAPT Report Not Found[-]\n[white]Please run a security scan first:[-]\n[cyan]security-audit aws all[-]").
-			SetBorder(true).
-			SetTitle(" VAPT REPORT ")
-	}
-	vulns := parseMarkdown()
-
-	var filteredVulns []Vulnerability
-
-	flex := tview.NewFlex().SetDirection(tview.FlexRow)
-	filterFlex := tview.NewFlex().SetDirection(tview.FlexColumn)
-
-	// SEARCH
-	searchInput := tview.NewInputField().
-		SetLabel("  Search: ").
-		SetFieldBackgroundColor(tcell.NewRGBColor(20, 25, 40)).
-		SetFieldTextColor(tcell.ColorWhite)
-	searchInput.SetBorder(true).SetTitle(" >_ SEARCH ")
-
-	// FILTERS
-	severityFilter := tview.NewDropDown().
-		SetOptions([]string{"ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW"}, nil)
-	severityFilter.SetCurrentOption(0)
-	severityFilter.SetBorder(true).SetTitle(" FILTER: SEVERITY ")
-
-	statusFilter := tview.NewDropDown().
-		SetOptions([]string{"ALL", "FAIL", "PASS"}, nil)
-	statusFilter.SetCurrentOption(0)
-	statusFilter.SetBorder(true).SetTitle(" FILTER: STATUS ")
-
-	filterFlex.AddItem(searchInput, 0, 3, true)
-	filterFlex.AddItem(severityFilter, 0, 1, false)
-	filterFlex.AddItem(statusFilter, 0, 1, false)
-
-	// LIST
-	list := tview.NewList().ShowSecondaryText(true)
-	list.SetBorder(true).SetTitle(" IDENTIFIED THREATS ")
-	list.SetBackgroundColor(tcell.NewRGBColor(18, 22, 35))
-	list.SetMainTextColor(tcell.ColorWhite)
-	list.SetSecondaryTextColor(tcell.ColorGray)
-
-	// DETAIL
-	detailView := tview.NewTextView().
-		SetDynamicColors(true).
-		SetWrap(true)
-
-	detailView.SetBorder(true).
-		SetTitle(" DETAILS ")
-
-	renderer, _ := glamour.NewTermRenderer(
-		glamour.WithStylePath("Report/my-theme.json"),
-		glamour.WithWordWrap(0),
-	)
-	downloadBtn := tview.NewButton("Download").SetSelectedFunc(func() {
-		data := GetReport()
-		dst := filepath.Join(".", "vapt_report.md")
-		err := os.WriteFile(dst, data, 0644)
-		if err != nil {
-			detailView.SetText("Error in Writing file")
+	state := "Intro"
+	for {
+		switch state {
+		case "Intro":
+			state = tui.RunIntro()
+		case "Monitor":
+			state = tui.RunTermUIMonitor()
+		case "Main":
+			state = runCLI()
+		case "Quit":
 			return
-		}
-		detailView.SetText("Report saved successfully")
-	})
-	rightPane := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(detailView, 0, 1, false).
-		AddItem(downloadBtn, 1, 0, false)
-
-	form := tview.NewForm()
-	var rule rules.Rule
-	form.SetFieldBackgroundColor(tcell.NewRGBColor(40, 45, 70))
-	form.SetFieldTextColor(tcell.ColorWhite)
-	form.AddInputField("ID", "", 20, nil, func(t string) { rule.ID = t })
-	form.AddInputField("Name", "", 40, nil, func(t string) { rule.Name = t })
-	form.SetButtonBackgroundColor(tcell.ColorDarkCyan)
-	form.SetButtonTextColor(tcell.ColorWhite)
-	form.AddDropDown("Severity",
-		[]string{"CRITICAL", "HIGH", "MEDIUM", "LOW"},
-		0,
-		func(opt string, _ int) { rule.Severity = opt  },
-		
-	)
-	form.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEnter {
-			return tcell.NewEventKey(tcell.KeyTab, 0, tcell.ModNone)
-		}
-		return event
-	})
-	form.AddInputField("Description", "", 60, nil, func(t string) { rule.Description = t })
-	form.AddInputField("Type", "", 30, nil, func(t string) { rule.Type = t })
-	form.AddInputField("Operator", "equals", 20, nil, func(t string) { rule.Check.Operator = t })
-	form.AddInputField("Value", "", 20, nil, func(t string) { rule.Check.Value = parseValue(t) })
-	form.AddInputField("Remediation", "", 60, nil, func(t string) { rule.Remediation = t })
-	form.SetBorder(true).SetTitle(" ADD CUSTOM VAPT RULE ").SetBorderColor(tcell.ColorDarkCyan)
-	form.AddButton("Save Rule", func() {
-		_ = saveRule(rule)
-	})
-
-	populateList := func() {
-		list.Clear()
-		filteredVulns = []Vulnerability{}
-
-		searchTerm := strings.ToLower(searchInput.GetText())
-		_, sev := severityFilter.GetCurrentOption()
-		_, stat := statusFilter.GetCurrentOption()
-
-		for _, v := range vulns {
-			if sev != "ALL" && v.Severity != sev {
-				continue
-			}
-			if stat != "ALL" && v.Status != stat {
-				continue
-			}
-			if searchTerm != "" &&
-				!strings.Contains(strings.ToLower(v.Title), searchTerm) &&
-				!strings.Contains(strings.ToLower(v.Content), searchTerm) {
-				continue
-			}
-
-			filteredVulns = append(filteredVulns, v)
-
-			statusText := "[green::b]PASS[-]"
-			if strings.ToUpper(v.Status) == "FAIL" {
-				statusText = "[red::b]FAIL[-]"
-			}
-
-			main := fmt.Sprintf("   [black:%s] %-58s [-:-:-]", getSeverityBg(v.Severity), v.Title)
-			sec := fmt.Sprintf("  [%s]  [%s::b]%s[-]", statusText, getSeverityColor(v.Severity), v.Severity)
-
-			list.AddItem(main, sec, 0, nil)
-		}
-	}
-
-	updateDetail := func() {
-		idx := list.GetCurrentItem()
-		if idx < 0 || idx >= len(filteredVulns) {
-			return
-		}
-
-		v := filteredVulns[idx]
-
-		statusText := "[green::b]PASS[-]"
-		if strings.ToUpper(v.Status) == "FAIL" {
-			statusText = "[red::b]FAIL[-]"
-		}
-
-		var borderColor tcell.Color
-		switch v.Severity {
-		case "CRITICAL":
-			borderColor = tcell.ColorRed
-		case "HIGH":
-			borderColor = tcell.ColorYellow
-		case "MEDIUM":
-			borderColor = tcell.ColorBlue
-		case "LOW":
-			borderColor = tcell.ColorGreen
 		default:
-			borderColor = tcell.ColorGray
+			state = "Intro"
 		}
-
-		detailView.SetBorderColor(borderColor)
-
-		desc := extractField(v.Content, "Description")
-		rem := extractField(v.Content, "Remediation")
-		remediationText := fmt.Sprintf("\n[::b]Remediation[::-]\n[#cfcfcf]%s[-]\n", rem)
-		if strings.ToUpper(v.Status) == "PASS" {
-			remediationText = ""
+		if state == "Quit" {
+			break
 		}
-
-		rendered, err := renderer.Render(v.Content)
-		if err != nil {
-			rendered = v.Content
-		}
-
-		rendered = strings.ReplaceAll(rendered, "**", "")
-		rendered = strings.ReplaceAll(rendered, "__", "")
-		rendered = strings.ReplaceAll(rendered, "`", "")
-
-		detailView.SetText(fmt.Sprintf(
-			`[::b]%s[::-]
-
-[gray]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[-]
-
-[white]Severity:[-] [%s::b]%s[-]     [white]Status:[-] %s
-
-[gray]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[-]
-
-[::b]Description[::-]
-[#cfcfcf]%s[-]
-
-[gray]──────────────────────────────────────────────[-]
-%s
-[gray]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[-]
-
-[gray::i]Full Technical Details (sanitized)[-]
-
-[#808080]%s[-]
-`,
-			v.Title,
-			getSeverityColor(v.Severity),
-			v.Severity,
-			statusText,
-			desc,
-			remediationText,
-			tview.TranslateANSI(trimRendered(rendered)),
-		))
-
 	}
+}
 
-	list.SetChangedFunc(func(int, string, string, rune) {
-		updateDetail()
-	})
-
-	searchInput.SetChangedFunc(func(string) {
-		populateList()
-		list.SetCurrentItem(0)
-		updateDetail()
-	})
-
-	severityFilter.SetSelectedFunc(func(string, int) {
-		populateList()
-		list.SetCurrentItem(0)
-		updateDetail()
-	})
-
-	statusFilter.SetSelectedFunc(func(string, int) {
-		populateList()
-		list.SetCurrentItem(0)
-		updateDetail()
-	})
-
-	if len(vulns) > 0 {
-		populateList()
-		updateDetail()
+func tabLabel(active string) string {
+	tabs := []struct{ id, label string }{
+		{"0", "MONITOR"},
+		{"1", "LUCIFER"},
+		{"2", "VAPT"},
+		{"3", "EXIT"},
 	}
+	out := " "
+	for _, t := range tabs {
+		if t.id == active {
+			out += fmt.Sprintf(`["%s"][white::rb]  %s  [""]  `, t.id, t.label)
+		} else {
+			out += fmt.Sprintf(`["%s"][gray::-]  %s  [""]  `, t.id, t.label)
+		}
+	}
+	return out
+}
 
-	body := tview.NewFlex().
-		AddItem(list, 0, 1, true).
-		AddItem(rightPane, 0, 2, false)
+func runCLI() string {
+	tview.Styles.PrimitiveBackgroundColor = tui.TrueBlack
+	tview.Styles.ContrastBackgroundColor = tui.TrueBlack
+	tview.Styles.MoreContrastBackgroundColor = tui.TrueBlack
+	tview.Styles.BorderColor = tcell.NewRGBColor(30, 60, 90)
+	tview.Styles.TitleColor = tcell.NewRGBColor(150, 150, 180)
+	tview.Styles.PrimaryTextColor = tcell.ColorWhite
+	tview.Styles.SecondaryTextColor = tcell.ColorSilver
+	tview.Styles.TertiaryTextColor = tcell.ColorGray
 
-	flex.AddItem(filterFlex, 5, 0, true)
-	flex.AddItem(body, 0, 1, false)
-	flex.AddItem(form, 8, 0, false)
+	app := tview.NewApplication()
+	var nextState string = "Quit"
+
+	notifyChan := make(chan string, 100)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	header := tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignCenter)
+	header.SetText(`[white::b]CHAOS CONTROL TERMINAL[-::-]   [#3c3c46]| Esc = nav  | run 'make ui-help' for usage[-]`)
+
+	tabBar := tview.NewTextView().SetDynamicColors(true).SetRegions(true).SetTextAlign(tview.AlignCenter)
+	tabBar.SetBorder(true).SetTitle(" NAVIGATION ").SetTitleColor(tcell.NewRGBColor(160, 160, 180))
+	tabBar.SetText(tabLabel("0"))
+
+	notificationBar := tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignLeft)
+	notificationBar.SetBorder(true).SetTitle(" SYSTEM LOG ").SetTitleColor(tcell.NewRGBColor(160, 160, 180))
+	notificationBar.SetText("[#3c8c5c]SYSTEM ONLINE[-]   [#3c3c46]Press Esc then a number to switch tabs[-]")
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg := <-notifyChan:
+				app.QueueUpdateDraw(func() {
+					notificationBar.SetText(fmt.Sprintf("[#3c3c46]%s[-]  %s", time.Now().Format("15:04:05"), msg))
+				})
+			}
+		}
+	}()
 
 	pages := tview.NewPages()
-	pages.AddPage("main", flex, true, true)
-	pages.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		_, focus := pages.GetFrontPage()
 
-		if isTyping(focus) || form.HasFocus() {
-			return event
+	termOutput := tview.NewTextView().SetDynamicColors(true).SetScrollable(true)
+	termOutput.SetBorder(true).SetTitle(" CHAOS SESSION ").SetTitleColor(tcell.ColorGreen).SetBackgroundColor(tui.TrueBlack)
+	fmt.Fprintf(termOutput, "[gray]CHAOS CLI ready.[-] Type [white]signup <email>[-] to register, or [white]login <token>[-] if you already have a token.\n\n")
+
+	nextStepBox := tview.NewTextView().SetDynamicColors(true).
+		SetWrap(true)
+	nextStepBox.SetBorder(true).
+		SetTitle(" SUGGESTED STEPS ").
+		SetTitleColor(tcell.ColorYellow).
+		SetBackgroundColor(tui.TrueBlack)
+	nextStepBox.SetText("[yellow]Start here:[-] `signup <email>` if you are new, or `login <token>` if you already have a Chaos API token.\n[gray]After auth:[-] try `create-agent --agent <instance-id>` or `create-experiment --type cpu_stress --agent <id> --duration 30 --cpu 40`.")
+
+	termInput := tview.NewInputField().SetLabel("[green]> [-]").SetFieldWidth(0)
+	termInput.SetBorder(true).SetTitle(" COMMANDS ").SetTitleColor(tcell.ColorGreen)
+	termInput.SetBackgroundColor(tui.TrueBlack)
+
+	termInput.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyUp {
+			if historyIndex > 0 {
+				historyIndex--
+				termInput.SetText(history[historyIndex])
+			}
+			return nil
+		}
+		if event.Key() == tcell.KeyDown {
+			if historyIndex < len(history)-1 {
+				historyIndex++
+				termInput.SetText(history[historyIndex])
+			} else {
+				historyIndex = len(history)
+				termInput.SetText("")
+			}
+			return nil
+		}
+		return event
+	})
+
+	resolveLuciferBin := func() (string, error) {
+		if bin := "./lucifer"; func() bool { _, err := os.Stat(bin); return err == nil }() {
+			abspath, _ := filepath.Abs(bin)
+			return abspath, nil
+		}
+
+		if self, err := os.Executable(); err == nil {
+			if bin := filepath.Join(filepath.Dir(self), "lucifer"); func() bool { _, err := os.Stat(bin); return err == nil }() {
+				return bin, nil
+			}
+		}
+
+		return exec.LookPath("lucifer")
+	}
+
+	termInput.SetDoneFunc(func(key tcell.Key) {
+		if key == tcell.KeyEnter {
+			cmdText := termInput.GetText()
+			if cmdText == "" {
+				return
+			}
+			history = append(history, cmdText)
+			historyIndex = len(history)
+			termInput.SetText("")
+
+			fmt.Fprintf(termOutput, "[white::b]> %s[-] \n", cmdText)
+
+			go func(c string) {
+				args := strings.Fields(c)
+				if args[0] == "lucifer" {
+					args = args[1:]
+				}
+				if len(args) == 0 {
+					return
+				}
+
+				stdinPayload := []byte(nil)
+				switch args[0] {
+				case "login":
+					if len(args) < 2 {
+						app.QueueUpdateDraw(func() {
+							fmt.Fprintf(termOutput, "[yellow]Usage: login <token>[-]\n")
+							termOutput.ScrollToEnd()
+						})
+						return
+					}
+					stdinPayload = []byte(args[1] + "\n")
+					args = []string{"login"}
+				case "signup":
+					userID := ""
+					if len(args) > 1 {
+						userID = strings.Join(args[1:], " ")
+					}
+					stdinPayload = []byte(userID + "\n")
+					args = []string{"signup"}
+				}
+
+				
+				cliMain := "main.go"
+				cliPath := "../cli"
+				var command *exec.Cmd
+				if _, err := os.Stat(filepath.Join(cliPath, cliMain)); err == nil {
+					command = exec.Command("go", "run", cliMain)
+					command.Dir = cliPath
+				} else {
+					binPath, _ := resolveLuciferBin()
+					command = exec.Command(binPath)
+				}
+				
+				command.Args = append(command.Args, args...)
+
+				command.Env = append(os.Environ(), "CHAOS_SERVER_URL=http://localhost:8000")
+				if stdinPayload != nil {
+					command.Stdin = bytes.NewReader(stdinPayload)
+				}
+				out, err := command.CombinedOutput()
+
+				app.QueueUpdateDraw(func() {
+					if err != nil {
+						fmt.Fprintf(termOutput, "[red]Error: %v[-]\n", err)
+					}
+					fmt.Fprintf(termOutput, "%s\n", string(out))
+					termOutput.ScrollToEnd()
+
+					// RELOAD TOKEN
+					tok := config.GetToken()
+					if tok != "" {
+						api.SetAuthToken(tok)
+						notificationBar.SetText(fmt.Sprintf("[green]Auth Refreshed[-] | Token: %s...", tok[:8]))
+					}
+				})
+			}(cmdText)
+		}
+	})
+
+	luciferFlex := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(nextStepBox, 5, 0, false).
+		AddItem(termOutput, 0, 1, false).
+		AddItem(termInput, 3, 0, true)
+
+	luciferFlex.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Rune() == 'q' && termInput.GetText() == "" {
+			nextState = "Quit"
+			app.Stop()
+			return nil
+		}
+		return event
+	})
+
+	pages.AddPage("1", luciferFlex, true, true)
+	app.SetFocus(termInput)
+
+	vaptView := report.GetVaptReportView()
+	pages.AddPage("2", vaptView, true, false)
+
+	tabBar.SetHighlightedFunc(func(added, _, _ []string) {
+		if len(added) == 0 {
+			return
+		}
+		active := added[0]
+		tabBar.SetText(tabLabel(active))
+		switch active {
+		case "0":
+			nextState = "Monitor"
+			app.Stop()
+		case "1":
+			pages.SwitchToPage("1")
+			app.SetFocus(termInput)
+		case "2":
+			pages.SwitchToPage("2")
+			app.SetFocus(vaptView)
+		case "3":
+			nextState = "Quit"
+			app.Stop()
+		}
+	})
+
+	inner := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(header, 1, 0, false).
+		AddItem(tabBar, 4, 0, false).
+		AddItem(pages, 0, 1, true).
+		AddItem(notificationBar, 3, 0, false)
+
+	root := tview.NewFlex().AddItem(nil, 0, 1, false).AddItem(inner, 120, 0, true).AddItem(nil, 0, 1, false)
+
+	
+	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEscape {
+			app.SetFocus(tabBar)
+			return nil
+		}
+		
+		focus := app.GetFocus()
+		if focus != nil {
+			switch focus.(type) {
+			case *tview.InputField, *tview.DropDown, *tview.Form, *tview.TextArea:
+				return event
+			}
+		}
+
+		if event.Key() == tcell.KeyTab {
+			current := tabBar.GetHighlights()
+			if len(current) > 0 {
+				next := "0"
+				switch current[0] {
+				case "0": next = "1"
+				case "1": next = "2"
+				case "2": next = "3"
+				case "3": next = "0"
+				}
+				tabBar.Highlight(next)
+			}
+			return nil
+		}
+
+		switch event.Rune() {
+		case 'q':
+			if app.GetFocus() != termInput {
+				tabBar.Highlight("3")
+				return nil
+			}
 		}
 
 		return event
 	})
 
-	return pages
+	tabBar.Highlight("1")
+	app.SetFocus(tabBar)
+
+	if err := app.SetRoot(root, true).EnableMouse(true).Run(); err != nil {
+		log.Fatalf("failed to run UI: %v", err)
+	}
+	return nextState
 }
