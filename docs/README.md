@@ -11,6 +11,7 @@ This documentation is organized into the following sections:
 - **[API Reference](api-reference.md)** - REST API documentation for the orchestrator
 - **[Chaos Experiments](chaos-experiments.md)** - Detailed guide to chaos engineering experiments
 - **[Security Auditing](security-auditing.md)** - VAPT and security scanning features
+- **[UI & Real-Time Observability](ui-observability.md)** - Forensic TUI dashboard guide
 - **[Architecture](architecture.md)** - System architecture and components
 - **[Contributing](contributing.md)** - Guidelines for contributors
 - **[Troubleshooting](troubleshooting.md)** - Common issues and solutions
